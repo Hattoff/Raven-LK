@@ -1,0 +1,7 @@
+# API keys
+key_openai.txt
+key_pinecone.txt
+# Log files and memory indexes
+nexus/
+gpt3_logs/
+summary_prompts/
