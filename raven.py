@@ -45,16 +45,21 @@ def gpt3_embedding(content):
     vector = response['data'][0]['embedding']  # this is a normal list
     return vector
 
-
+def print_response_stats(response):
+    response_id = ('\nResponse %s' % str(response['id']))
+    prompt_tokens = ('\nPrompt Tokens: %s' % (str(response['usage']['prompt_tokens'])))
+    completion_tokens = ('\nCompletion Tokens: %s' % str(response['usage']['completion_tokens']))
+    total_tokens = ('\nTotal Tokens: %s\n' % (str(response['usage']['total_tokens'])))
+    breakpoint(response_id + prompt_tokens + completion_tokens + total_tokens)
 
 def gpt_completion(prompt, engine=config['open_ai']['model'], temp=0.0, top_p=1.0, tokens=400, freq_pen=0.0, pres_pen=0.0, stop=['USER:', 'RAVEN:']):
     if 'gpt-3.5-turbo' in engine:
-        gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop)
+        return gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop)
     else:
-        gpt3_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop)
+        return gpt3_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop)
 
 def gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop):
-    breakpoint('Using gpt3.5')
+    # breakpoint('Using gpt3.5')
     max_retry = 5
     retry = 0
     prompt = prompt.encode(encoding='ASCII',errors='ignore').decode()
@@ -71,8 +76,11 @@ def gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, s
                 frequency_penalty=freq_pen,
                 presence_penalty=pres_pen,
                 stop=stop)
-            print(response)
-            print(response['choices'])
+
+            print_response_stats(response)
+            # breakpoint(response['choices'])
+            # breakpoint(response['choices'][0]['message'])
+            # breakpoint(response['choices'][0]['message']['content'])
             text = response['choices'][0]['message']['content'].strip()
             text = re.sub('[\r\n]+', '\n', text)
             text = re.sub('[\t ]+', ' ', text)
@@ -81,6 +89,8 @@ def gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, s
             if not os.path.exists(foldername):
                 os.makedirs(foldername)
             save_file('%s/%s' % (foldername,filename), prompt + '\n\n==========\n\n' + text)
+            breakpoint(text)
+            breakpoint('\nAbove are the text results from the prompt...')
             return text
         except Exception as oops:
             retry += 1
@@ -90,7 +100,7 @@ def gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, s
             sleep(2)
 
 def gpt3_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop):
-    breakpoint('Using gpt3')
+    # breakpoint('Using gpt3')
     max_retry = 5
     retry = 0
     prompt = prompt.encode(encoding='ASCII',errors='ignore').decode()
@@ -121,9 +131,15 @@ def gpt3_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, sto
             print('Error communicating with OpenAI:', oops)
             sleep(2)
 
-def load_conversation(results):
+def load_conversation(results, current_prompt_id = ''):
     recalled = list()
+    if current_prompt_id != '':
+        breakpoint('Including current prompt id...')
+        info = load_json('nexus/%s.json' % current_prompt_id)
+        recalled.append(info)
+
     for m in results['matches']:
+        # breakpoint('Loading memory: ' + m['id'])
         info = load_json('nexus/%s.json' % m['id'])
         recalled.append(info)
     ordered = sorted(recalled, key=lambda d: d['time'], reverse=False)  # sort them all chronologically
@@ -131,58 +147,33 @@ def load_conversation(results):
     return '\n'.join(messages).strip(), recalled
 
 def summarize_memories(memories):  # summarize a block of memories into one payload
+    # breakpoint('fetching memories...')
     memories = sorted(memories, key=lambda d: d['time'], reverse=False)  # sort them chronologically
-
-    blocked_summary = ''
+    blocked_summary = '' ## TODO: Implement block summary
     chunked_summary = ''
     blocks = chunk_memories(memories)
     block_count = len(blocks)
     for chunks in blocks:
+        chunked_summary = '' # Combine all chunk summaries into one long prompt and use it for context
         for chunk in chunks:
-            chunked_message = ''
+            chunked_message = '' # Combine all memories into a long prompt and have it summarized
             for mem in chunk:
                 message = format_summary_memory(mem)
-                chunked_message += message + '\n\n'
+                chunked_message += message.strip() + '\n\n'
             chunked_message = chunked_message.strip()
             chunked_prompt = open_file('prompt_notes.txt').replace('<<INPUT>>', chunked_summary + chunked_message)
             chunk_prompt_filename = 'summary_chunk_prompt_%s.json' % time()
             save_json('summary_prompts/%s' % chunk_prompt_filename, chunked_prompt)
 
+            chunked_notes = ''
             chunked_notes = gpt_completion(chunked_prompt)
-
+            # print(chunked_notes)
+            # breakpoint('above are the chunked notes...')
             chunk_notes_filename = 'summary_chunk_notes_%s.json' % time()
             save_json('summary_prompts/%s' % chunk_notes_filename, chunked_notes)
-            breakpoint('Finished with first prompt')
-            # chunked_summary += prompt + '\n\n'
-        # chunks_filename = 'summary_summarized_chunks_prompt_%s.json' % time()
-        # chunks_prompt = open_file('prompt_notes.txt').replace('<<INPUT>>', chunked_summary)
-        # save_json('summary_prompts/%s' % chunks_filename, chunks_prompt)
-        # breakpoint()
-        # if block_count > 1:
-            # blocked_summary += prompt + '\n\n'
-
-    # block = ''
-    # identifiers = list()
-    # timestamps = list()
-    # for mem in memories:
-    #     message = format_summary_memory(mem)
-    #     block += message + '\n\n'
-    #     identifiers.append(mem['uuid'])
-    #     timestamps.append(mem['time'])
-    # block = block.strip()
-    # prompt = open_file('prompt_notes.txt').replace('<<INPUT>>', block)
-    # filename = 'summary_prompt_%s.json' % time()
-    # save_json('summary_prompts/%s' % filename, prompt)
-    breakpoint('finished...')
-    # TODO - do this in the background over time to handle huge amounts of memories
-    # notes = gpt_completion(prompt)
-    ####   SAVE NOTES
-    # vector = gpt3_embedding(block)
-    # info = {'notes': notes, 'uuids': identifiers, 'times': timestamps, 'uuid': str(uuid4()), 'vector': vector, 'time': time()}
-    # filename = 'notes_%s.json' % time()
-    # save_json('internal_notes/%s' % filename, info)
-    notes = ''
-    return notes
+            # breakpoint('Finished with first prompt')
+            chunked_summary = chunked_notes.strip() + '\n'
+    return chunked_summary.strip()
 
 def format_summary_memory(memory):
     message = '%s: %s - %s' % (memory['speaker'], memory['timestring'], memory['message'])
@@ -261,15 +252,19 @@ def chunk_memories(memories, token_response_limit=int(config['raven']['summary_t
 
 
 #### get user input, vectorize it, index it, save to pinecone
-def prompt_user(payload = list()):
+def prompt_user(payload = list(), cache_message = False):
     user_input = input('\n\nUSER: ')
     vector = gpt3_embedding(user_input)
     message, unique_id = generate_message_metadata('USER',user_input)
-    index_message(message,unique_id)
+    if cache_message:
+        index_message(message,unique_id)
+        mem_wipe = open('mem_wipe.txt','a')
+        mem_wipe.write('%s\n' % str(unique_id))
+        mem_wipe.close()
     payload.append((unique_id, vector))
-    return payload, vector
+    return payload, vector, unique_id
 
-#### Index message with unique id for memeory recall
+#### Index message with unique id and save it locally for memeory recall
 def index_message(msg, unique_id=str(uuid4())):
     save_json('%s/%s.json' % (config['raven']['nexus_dir'],unique_id), msg)
     return unique_id
@@ -291,6 +286,102 @@ def print_pinecone_results(results):
         info = load_json('nexus/%s.json' % m['id'])
         print(info)
 
+
+#### Get the last n conversation memories and summarize them
+# def initialize_context(message_history_count = 30):
+
+
+#### Based on a conversation notes and recent messages determine if the most recent question
+#### could be answered with the information provided of if another query is needed.
+def determine_query(memories, conversation_notes):
+    recent_messages = ''
+    for mem in memories:
+        recent_messages += ('%s\n' % format_summary_memory(mem).strip())
+    prompt = open_file('determine_query.txt').replace('<<CONVERSATION_NOTES>>', conversation_notes).replace('<<RECENT_MESSAGES>>', recent_messages)
+
+    prompt_filename = 'query_prompt_%s.json' % time()
+    save_json('summary_prompts/%s' % prompt_filename, prompt)
+
+    results = gpt_completion(prompt)
+
+    prompt_results_filename = 'query_prompt_results_%s.json' % time()
+    save_json('summary_prompts/%s' % prompt_results_filename, results)
+    
+    action_result = re.search(r"(ACTION:)(.*\n)", results)
+    keywords_result = re.search(r"(KEYWORDS:)(.*\n)", results)
+    reason_result = re.search(r"(REASON FOR MY DECISION:)(.*\n)", results)
+    response_result = re.search(r"(MY RESPONSE:)(.*\n*.*)", results)
+
+    action, keywords, reason, response = '','','',''
+    if action_result is not None:
+        if len(action_result.groups()) >= 2:
+            action = action_result.groups()[1].strip()
+
+    if keywords_result is not None:
+        if len(keywords_result.groups()) >= 2:
+            keywords = keywords_result.groups()[1].strip()
+        
+    if reason_result is not None:
+        if len(reason_result.groups()) >= 2:
+            reason = reason_result.groups()[1].strip()
+
+    if response_result is not None:
+        if len(response_result.groups()) >= 2:
+            response = response_result.groups()[1].strip()
+
+    msg = ('\nAction: %s\nKeywords: %s\nReason: %s\nResponse: %s\n' % (action, keywords, reason, response))
+    breakpoint(msg)
+    return action, keywords, reason, response
+
+#### Based on a conversation notes and recent messages use prompt to determine
+#### if the most recent message was a question, statement, request to modify, or request to create
+def determine_intent(memories, conversation_notes):
+    recent_messages = ''
+    for mem in memories:
+        recent_messages += ('%s\n' % format_summary_memory(mem).strip())
+    prompt = open_file('determine_intention.txt').replace('<<CONVERSATION_NOTES>>', conversation_notes).replace('<<RECENT_MESSAGES>>', recent_messages)
+
+    prompt_filename = 'intent_prompt_%s.json' % time()
+    save_json('summary_prompts/%s' % prompt_filename, prompt)
+
+    results = gpt_completion(prompt)
+
+    prompt_results_filename = 'intent_prompt_results_%s.json' % time()
+    save_json('summary_prompts/%s' % prompt_results_filename, results)
+    
+    # breakpoint(results)
+
+    speaker_result = re.search(r"(SPEAKER:)(.*\n)", results)
+    intent_result = re.search(r"(INTENT:)(.*\n)", results)
+    keywords_result = re.search(r"(KEYWORDS:)(.*\n)", results)
+    reason_result = re.search(r"(REASON FOR MY DECISION:)(.*\n)", results)
+    response_result = re.search(r"(MY RESPONSE:)(.*\n*.*)", results)
+
+    speaker, intent, keywords, reason, response = '','','','',''
+    if speaker_result is not None:
+        if len(speaker_result.groups()) >= 2:
+            speaker = speaker_result.groups()[1].strip()
+    
+    if intent_result is not None:
+        if len(intent_result.groups()) >= 2:
+            intent = intent_result.groups()[1].strip()
+
+    if keywords_result is not None:
+        if len(keywords_result.groups()) >= 2:
+            keywords = keywords_result.groups()[1].strip()
+        
+    if reason_result is not None:
+        if len(reason_result.groups()) >= 2:
+            reason = reason_result.groups()[1].strip()
+
+    if response_result is not None:
+        if len(response_result.groups()) >= 2:
+            response = response_result.groups()[1].strip()
+
+    msg = ('\nSpeaker: %s\nIntent: %s\nKeywords: %s\nReason: %s\nResponse: %s\n' % (speaker, intent, keywords, reason, response))
+    breakpoint(msg)
+    return speaker, intent, keywords, reason, response
+
 if __name__ == '__main__':
     convo_length = 30
     openai.api_key = open_file(config['open_ai']['api_key'])
@@ -299,29 +390,21 @@ if __name__ == '__main__':
     while True:
         #### Prepare payload for pinecone upload
         payload = list()
-        payload, vector = prompt_user(payload)
+        payload, vector, prompt_id = prompt_user(payload, True)
         #### Search for relevant messages, and generate a response
+        breakpoint('Searching for context...')
         results = vdb.query(vector=vector, top_k=convo_length)
-        
+        #### Search for story elements related to the topic needing queried.
+        # results = vdb.query(vector=vector, top_k=convo_length, namespace="story-elements")
         #### Load past conversations which match the user prompt and summarize
-        conversation, recalled = load_conversation(results)
-        print(conversation)
-        breakpoint()
+        breakpoint('Loading conversation...')
+        conversation, recalled = load_conversation(results, prompt_id)
         notes = summarize_memories(recalled)
-        print(notes)
-        breakpoint()
-
-        # prompt = open_file('prompt_response.txt').replace('<<CONVERSATION>>', conversation).replace('<<MESSAGE>>', a)
-        # #### generate response, vectorize, save, etc
-        # output = gpt_completion(prompt)
-        # timestamp = time()
-        # timestring = timestamp_to_datetime(timestamp)
-        # #message = '%s: %s - %s' % ('RAVEN', timestring, output)
-        # message = output
-        # vector = gpt3_embedding(message)
-        # unique_id = str(uuid4())
-        # metadata = {'speaker': 'RAVEN', 'time': timestamp, 'message': message, 'timestring': timestring, 'uuid': unique_id}
-        # save_json('nexus/%s.json' % unique_id, metadata)
-        # payload.append((unique_id, vector))
-        # vdb.upsert(payload)
-        # print('\n\nRAVEN: %s' % output) 
+        tmp_msg = recalled.copy()
+        sorted(tmp_msg, key=lambda d: d['time'], reverse=True)
+        recent_messages = tmp_msg[0:4]
+        breakpoint('Determining Intent...')
+        intent_speaker, intent_intent, intent_keywords, intent_reason, intent_response = determine_intent(recent_messages, notes)
+        breakpoint('Determining Query...')
+        query_action, query_keywords, query_reason, query_response = determine_query(recent_messages, notes)
+        breakpoint('end of main loop')
