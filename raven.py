@@ -10,6 +10,7 @@ from uuid import uuid4
 import datetime
 import pinecone
 import math
+import glob
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -50,7 +51,7 @@ def print_response_stats(response):
     prompt_tokens = ('\nPrompt Tokens: %s' % (str(response['usage']['prompt_tokens'])))
     completion_tokens = ('\nCompletion Tokens: %s' % str(response['usage']['completion_tokens']))
     total_tokens = ('\nTotal Tokens: %s\n' % (str(response['usage']['total_tokens'])))
-    breakpoint(response_id + prompt_tokens + completion_tokens + total_tokens)
+    print(response_id + prompt_tokens + completion_tokens + total_tokens)
 
 def gpt_completion(prompt, engine=config['open_ai']['model'], temp=0.0, top_p=1.0, tokens=400, freq_pen=0.0, pres_pen=0.0, stop=['USER:', 'RAVEN:']):
     if 'gpt-3.5-turbo' in engine:
@@ -59,7 +60,6 @@ def gpt_completion(prompt, engine=config['open_ai']['model'], temp=0.0, top_p=1.
         return gpt3_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop)
 
 def gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop):
-    # breakpoint('Using gpt3.5')
     max_retry = 5
     retry = 0
     prompt = prompt.encode(encoding='ASCII',errors='ignore').decode()
@@ -78,9 +78,6 @@ def gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, s
                 stop=stop)
 
             print_response_stats(response)
-            # breakpoint(response['choices'])
-            # breakpoint(response['choices'][0]['message'])
-            # breakpoint(response['choices'][0]['message']['content'])
             text = response['choices'][0]['message']['content'].strip()
             text = re.sub('[\r\n]+', '\n', text)
             text = re.sub('[\t ]+', ' ', text)
@@ -89,8 +86,8 @@ def gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, s
             if not os.path.exists(foldername):
                 os.makedirs(foldername)
             save_file('%s/%s' % (foldername,filename), prompt + '\n\n==========\n\n' + text)
-            breakpoint(text)
-            breakpoint('\nAbove are the text results from the prompt...')
+            # print(text)
+            # print('\nAbove are the text results from the prompt...')
             return text
         except Exception as oops:
             retry += 1
@@ -100,7 +97,6 @@ def gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, s
             sleep(2)
 
 def gpt3_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop):
-    # breakpoint('Using gpt3')
     max_retry = 5
     retry = 0
     prompt = prompt.encode(encoding='ASCII',errors='ignore').decode()
@@ -131,15 +127,13 @@ def gpt3_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, sto
             print('Error communicating with OpenAI:', oops)
             sleep(2)
 
-def load_conversation(results, current_prompt_id = ''):
+def load_conversation(pinecone_results, current_prompt_id = ''):
     recalled = list()
     if current_prompt_id != '':
-        breakpoint('Including current prompt id...')
         info = load_json('nexus/%s.json' % current_prompt_id)
         recalled.append(info)
 
-    for m in results['matches']:
-        # breakpoint('Loading memory: ' + m['id'])
+    for m in pinecone_results['matches']:
         info = load_json('nexus/%s.json' % m['id'])
         recalled.append(info)
     ordered = sorted(recalled, key=lambda d: d['time'], reverse=False)  # sort them all chronologically
@@ -147,9 +141,8 @@ def load_conversation(results, current_prompt_id = ''):
     return '\n'.join(messages).strip(), recalled
 
 def summarize_memories(memories):  # summarize a block of memories into one payload
-    # breakpoint('fetching memories...')
     memories = sorted(memories, key=lambda d: d['time'], reverse=False)  # sort them chronologically
-    blocked_summary = '' ## TODO: Implement block summary
+    blocked_summary = '' ## TODO: Implement block summary strategy
     chunked_summary = ''
     blocks = chunk_memories(memories)
     block_count = len(blocks)
@@ -161,17 +154,13 @@ def summarize_memories(memories):  # summarize a block of memories into one payl
                 message = format_summary_memory(mem)
                 chunked_message += message.strip() + '\n\n'
             chunked_message = chunked_message.strip()
+            
             chunked_prompt = open_file('prompt_notes.txt').replace('<<INPUT>>', chunked_summary + chunked_message)
-            chunk_prompt_filename = 'summary_chunk_prompt_%s.json' % time()
-            save_json('summary_prompts/%s' % chunk_prompt_filename, chunked_prompt)
+            save_prompt('summary_chunk_prompt_',chunked_prompt)
 
-            chunked_notes = ''
             chunked_notes = gpt_completion(chunked_prompt)
-            # print(chunked_notes)
-            # breakpoint('above are the chunked notes...')
-            chunk_notes_filename = 'summary_chunk_notes_%s.json' % time()
-            save_json('summary_prompts/%s' % chunk_notes_filename, chunked_notes)
-            # breakpoint('Finished with first prompt')
+            save_prompt('summary_chunk_notes_',chunked_notes)
+
             chunked_summary = chunked_notes.strip() + '\n'
     return chunked_summary.strip()
 
@@ -287,8 +276,22 @@ def print_pinecone_results(results):
         print(info)
 
 
-#### Get the last n conversation memories and summarize them
-# def initialize_context(message_history_count = 30):
+#### Get the last n conversation memories
+def get_recent_messages(message_history_count = 30, sort_decending = True):
+    files = glob.glob('%s/*.json' % config['raven']['nexus_dir'])
+    files.sort(key=os.path.getmtime, reverse=True)
+    if len(files) < message_history_count:
+        message_history_count = len(files)-1
+    # print(files)
+    messages = list()
+    for message in list(files):
+        message = message.replace('\\','/')
+        info = load_json(message)
+        messages.append(info)
+    return_messages = messages[0:message_history_count]
+    if sort_decending:
+        sorted(return_messages, key=lambda d: d['time'], reverse=False)
+    return return_messages
 
 
 #### Based on a conversation notes and recent messages determine if the most recent question
@@ -298,14 +301,10 @@ def determine_query(memories, conversation_notes):
     for mem in memories:
         recent_messages += ('%s\n' % format_summary_memory(mem).strip())
     prompt = open_file('determine_query.txt').replace('<<CONVERSATION_NOTES>>', conversation_notes).replace('<<RECENT_MESSAGES>>', recent_messages)
-
-    prompt_filename = 'query_prompt_%s.json' % time()
-    save_json('summary_prompts/%s' % prompt_filename, prompt)
+    save_prompt('query_prompt_',prompt)
 
     results = gpt_completion(prompt)
-
-    prompt_results_filename = 'query_prompt_results_%s.json' % time()
-    save_json('summary_prompts/%s' % prompt_results_filename, results)
+    save_prompt('query_prompt_results_',results)
     
     action_result = re.search(r"(ACTION:)(.*\n)", results)
     keywords_result = re.search(r"(KEYWORDS:)(.*\n)", results)
@@ -330,7 +329,7 @@ def determine_query(memories, conversation_notes):
             response = response_result.groups()[1].strip()
 
     msg = ('\nAction: %s\nKeywords: %s\nReason: %s\nResponse: %s\n' % (action, keywords, reason, response))
-    breakpoint(msg)
+    print(msg)
     return action, keywords, reason, response
 
 #### Based on a conversation notes and recent messages use prompt to determine
@@ -340,16 +339,10 @@ def determine_intent(memories, conversation_notes):
     for mem in memories:
         recent_messages += ('%s\n' % format_summary_memory(mem).strip())
     prompt = open_file('determine_intention.txt').replace('<<CONVERSATION_NOTES>>', conversation_notes).replace('<<RECENT_MESSAGES>>', recent_messages)
-
-    prompt_filename = 'intent_prompt_%s.json' % time()
-    save_json('summary_prompts/%s' % prompt_filename, prompt)
+    save_prompt('intent_prompt_',prompt)
 
     results = gpt_completion(prompt)
-
-    prompt_results_filename = 'intent_prompt_results_%s.json' % time()
-    save_json('summary_prompts/%s' % prompt_results_filename, results)
-    
-    # breakpoint(results)
+    save_prompt('intent_prompt_results_',results)
 
     speaker_result = re.search(r"(SPEAKER:)(.*\n)", results)
     intent_result = re.search(r"(INTENT:)(.*\n)", results)
@@ -379,32 +372,131 @@ def determine_intent(memories, conversation_notes):
             response = response_result.groups()[1].strip()
 
     msg = ('\nSpeaker: %s\nIntent: %s\nKeywords: %s\nReason: %s\nResponse: %s\n' % (speaker, intent, keywords, reason, response))
-    breakpoint(msg)
+    print(msg)
     return speaker, intent, keywords, reason, response
+
+def save_prompt(prompt_prefix, content):
+    prompt_results_filename = '%s%s.json' % (prompt_prefix,time())
+    save_json('summary_prompts/%s' % prompt_results_filename, content)
+
+def subprocess_input(memories, notes, most_recent_message):
+    recent_messages_combined=''
+    for mem in memories:
+        recent_messages_combined += ('%s\n' % format_summary_memory(mem).strip())
+        
+    print('Determining Intent...')
+    intent_speaker, intent_intent, intent_keywords, intent_reason, intent_response = determine_intent(memories, notes)
+    print('Determining Query...')
+    query_action, query_keywords, query_reason, query_response = determine_query(memories, notes)
+
+    if intent_intent.lower() == 'question' and intent_speaker.lower() == 'user':
+        ## TODO: Give raven ability to query memories and files
+        # if query_action.lower() == 'query':
+        ## Generate a vector based on the missing information
+        print('Fetching wiki info...')
+        vector = gpt3_embedding('%s\n%s\n%s' % (intent_keywords, query_keywords, query_reason))
+        wiki_pinecone_results = query_pinecone(vector, 1, 'wiki_pages')
+        if len(wiki_pinecone_results['matches']) > 0:
+            pinecone_result = wiki_pinecone_results['matches'][0]
+            info = load_json('%s/%s.json' % (config['wiki']['wiki_metadata'],pinecone_result['id']))
+            wiki_page_filename = info['filename']
+            wiki_summary = summarize_wiki_page(wiki_page_filename)
+            
+            prompt = open_file('prompt_notes_with_wiki_summary.txt').replace('<<CONVERSATION_NOTES>>',notes).replace('<<DOCUMENT_SUMMARY>>', wiki_summary).replace('<<RECENT_MESSAGES>>', recent_messages_combined)
+            save_prompt('response_with_wiki_page_prompt_',prompt)
+
+            results = gpt_completion(prompt, tokens=300)
+            save_prompt('response_with_wiki_page_prompt_results_',results)
+            print('done recalling')
+            return results
+        else:
+            breakpoint('no recall')
+        
+        memory_search = intent_keywords + '\n' + intent_reason
+    # elif (intent_intent.lower() == 'query' or intent_intent.lower() == 'create' or intent_intent.lower() == 'modify') and intent_speaker.lower() == 'user':
+        ## TODO: Have raven search wiki and determine if the file exists
+
+def summarize_wiki_page(filename):
+    wiki_page_content = open_file('%s/%s.txt' % (config['wiki']['wiki_pages'],filename))
+    prompt = open_file('prompt_summarize_wiki_page.txt').replace('<<CONTENT>>', wiki_page_content)
+    save_prompt('wiki_page_summary_prompt_',prompt)
+
+    results = gpt_completion(prompt)
+    save_prompt('wiki_page_summary_prompt_results_',results)
+
+    return results
+
+
+def load_conversation(pinecone_results, current_prompt_id = ''):
+    recalled = list()
+    if current_prompt_id != '':
+        info = load_json('nexus/%s.json' % current_prompt_id)
+        recalled.append(info)
+
+    for m in pinecone_results['matches']:
+        info = load_json('nexus/%s.json' % m['id'])
+        recalled.append(info)
+    ordered = sorted(recalled, key=lambda d: d['time'], reverse=False)  # sort them all chronologically
+    messages = [i['message'] for i in ordered]
+    return '\n'.join(messages).strip(), recalled
+    
+def vectorize_wiki_page(filename):
+    breakpoint('loading wiki page...')
+    vdb = pinecone.Index(config['pinecone']['index'])
+    page_content = open_file('%s/%s.txt' % (config['wiki']['wiki_pages'],filename))
+    vector = gpt3_embedding(page_content)
+
+    timestamp = time()
+    unique_id=str(uuid4())
+    print(unique_id)
+    timestring = timestamp_to_datetime(timestamp)
+    breakpoint('saving local metadata...')
+    local_metadata = {'filename': filename, 'element_type': 'location', 'time': timestamp, 'timestring': timestring, 'uuid': unique_id}
+    save_json('%s/%s.json' % (config['wiki']['wiki_metadata'],unique_id), local_metadata)
+
+    breakpoint('saving pinecone vector...')
+    pinecone_metadata = {'filename': filename, 'element_type': 'location'}
+    pinecone_payload = {'id': unique_id, 'values': vector, 'metadata': pinecone_metadata}
+    payload = list()
+    payload.append(pinecone_payload)
+    vdb.upsert(payload, namespace='wiki_pages')
+
+def query_pinecone(vector, return_n, name_space = "", search_all = False):
+    vdb = pinecone.Index(config['pinecone']['index'])
+    if search_all:
+        results = vdb.query(vector=vector, top_k=return_n)
+    else:
+        results = vdb.query(vector=vector, top_k=return_n, namespace=name_space)
+    return results
 
 if __name__ == '__main__':
     convo_length = 30
     openai.api_key = open_file(config['open_ai']['api_key'])
     pinecone.init(api_key=open_file(config['pinecone']['api_key']), environment=config['pinecone']['environment'])
     vdb = pinecone.Index(config['pinecone']['index'])
+    # payload = list()
+    # payload.append((unique_id, vector))
+    # vdb.upsert(payload)
+    # vectorize_wiki_page('echo')
+    # breakpoint('index complete.')
     while True:
         #### Prepare payload for pinecone upload
         payload = list()
         payload, vector, prompt_id = prompt_user(payload, True)
         #### Search for relevant messages, and generate a response
-        breakpoint('Searching for context...')
+        print('Searching for context...')
+        vdb.upsert(payload)
         results = vdb.query(vector=vector, top_k=convo_length)
         #### Search for story elements related to the topic needing queried.
         # results = vdb.query(vector=vector, top_k=convo_length, namespace="story-elements")
         #### Load past conversations which match the user prompt and summarize
-        breakpoint('Loading conversation...')
+        print('Loading conversation...')
         conversation, recalled = load_conversation(results, prompt_id)
         notes = summarize_memories(recalled)
-        tmp_msg = recalled.copy()
-        sorted(tmp_msg, key=lambda d: d['time'], reverse=True)
-        recent_messages = tmp_msg[0:4]
-        breakpoint('Determining Intent...')
-        intent_speaker, intent_intent, intent_keywords, intent_reason, intent_response = determine_intent(recent_messages, notes)
-        breakpoint('Determining Query...')
-        query_action, query_keywords, query_reason, query_response = determine_query(recent_messages, notes)
+        recent_messages = get_recent_messages(5)
+        response = subprocess_input(recent_messages, notes, recent_messages[0])
+        
+        # recent_messages = get_recent_messages(5)
+        # determine_process(recent_messages, notes)
+        print('\n\nRAVEN: %s' % response) 
         breakpoint('end of main loop')

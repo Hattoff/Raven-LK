@@ -6,3 +6,5 @@ nexus/
 gpt3_logs/
 summary_prompts/
 prompt_tests/
+wiki_pages/
+wiki_metadata/
