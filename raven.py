@@ -11,11 +11,12 @@ import datetime
 import pinecone
 import math
 import glob
-from raven_memory_management import *
+from raven_memory_management import MemoryManager
 from raven_open_ai import *
 
 config = configparser.ConfigParser()
 config.read('config.ini')
+memory_manager = MemoryManager()
 
 def timestamp_to_datetime(unix_time):
     return datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M%p %Z")
@@ -228,19 +229,6 @@ def vectorize_wiki_page(filename):
     payload.append(pinecone_payload)
     vdb.upsert(payload, namespace='wiki_pages')
 
-## The depth is the current referenced memory depth, not the next episodic depth
-def compress_summaries(memories, depth):
-    ## When memories of a particular depth exceed the token length then
-    ## compress them into the next episodic depth and flush the cache
-    return ""
-
-def compress_messages(messages):
-    ## When the message token count exceeds the token length then compress
-    ## them into the first episodic memory and flush the cache
-    return ""
-
-
-
 ## The role can be either system or user. If the role is system then you are either giving the model instructions/personas or example prompts.
 ## Then name field is used for example prompts which guide the model on how to respond.
 ## If the name field has data, the model will not consider them part of the conversation; the role will be system by default.
@@ -252,31 +240,11 @@ def compose_gpt_message(content,role,name=''):
         return {"role":role,"name":name,"content": content}
 
 
-
-
-
-
-
 if __name__ == '__main__':
-
     while True:
-        ## Prepare payload for pinecone upload
-        payload = list()
-        payload, vector, prompt_id = prompt_user(payload, True)
-        ## Search for relevant messages, and generate a response
-        print('Searching for context...')
-        vdb.upsert(payload)
-        results = vdb.query(vector=vector, top_k=convo_length)
-        ## Search for story elements related to the topic needing queried.
-        # results = vdb.query(vector=vector, top_k=convo_length, namespace="story-elements")
-        ## Load past conversations which match the user prompt and summarize
-        print('Loading conversation...')
-        conversation, recalled = load_conversation(results, prompt_id)
-        notes = summarize_memories(recalled)
-        recent_messages = get_recent_messages(5)
-        response = subprocess_input(recent_messages, notes, recent_messages[0])
-        
-        # recent_messages = get_recent_messages(5)
-        # determine_process(recent_messages, notes)
-        print('\n\nRAVEN: %s' % response)
-        breakpoint('end of main loop')
+        ## Do things
+        user_input = input('USER: ')
+        ## cache message
+        memory_manager.generate_eidetic_memory('USER', user_input)
+        compose_gpt_message(user_input,'user')
+        ## process message

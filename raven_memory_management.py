@@ -6,17 +6,18 @@ from time import time,sleep
 import datetime
 from uuid import uuid4
 import pinecone
-# from raven_pinecone import *
-# from raven_open_ai import *
 import tiktoken
+import re
+
+## NOTE:Likely will move the OpenAi stuff later, not sure.
+import openai
 
 ##### NOTE: Token counts should leave enough room for a variety of prompt instructions, since their use may vary. I am thinking of leaving a buffer of 1000 to ensure there is enough room, but I will generalize it so adjustments can be made easily
 
 ##### NOTE: Memories may need to be chunked if the token estimation is significantly off. This can be done on a prompt-by-prompt basis
 
-
 ## When a new message is added the memory manager will assess when memory compression should occur.
-class MemoryManager:   
+class MemoryManager:
     def __init__(self):
         self.__config = configparser.ConfigParser()
         self.__config.read('config.ini')
@@ -24,6 +25,9 @@ class MemoryManager:
         self.__max_tokens = self.__config['open_ai']['max_token_input']
         self.__episodic_memory_caches = [] # index will represent memory depth, useful for dynamic memory expansion
         self.__max_episodic_depth = 2 # will restrict memory expansion. 0 is unlimited depth.
+
+        openai.api_key = self.open_file(self.__config['open_ai']['api_key'])
+
         ## When initialized, attempt to load cached state, otherwise make a new state
         if not (self.load_state()):
             self.create_state()
@@ -63,10 +67,9 @@ class MemoryManager:
             return self.__token_count
 
         def import_cache(self, cache):
-            ## Set all class attributes from the cache JSON           
+            ## Set all class attributes from the cache JSON
             ## If cache is invalid, throw error.
             return ""
-
 
         ## Return a JSON version of this object to save
         @property
@@ -92,7 +95,7 @@ class MemoryManager:
             self.__memories.append(memory)
             ## If no more memory space return True, this will trigger a memory compression
             return not (self.has_memory_space(0))
-        
+
         ## Before adding a memory, check to see if there will be space with next memory.
         def has_memory_space(next_number_of_tokens):
             if self.__token_count + next_number_of_tokens <= (self.__max_tokens - self.__token_buffer):
@@ -111,12 +114,15 @@ class MemoryManager:
     ## Load JSON object representing state. State is all memory caches not yet summarized, active tasks, and active context.
     def load_state(self):
         ## Get all json files ordered by name. The name should have a timestamp prefix.
-        files = sorted(filter(os.path.isfile, glob.glob(self.__config['memory_management']['memory_state_dir'] + '*.json')))
-        
+        files = glob.glob('%s/*.json' % (self.__config['memory_management']['memory_state_dir']))
+        files.sort(key=os.path.basename, reverse=True)
+
         # there were no state backups so make and implement a new one
         if len(list(files)) <= 0:
+            print("no state backups found...")
             return False
 
+        print("state backups loaded...")
         state_path = list(files)[0].replace('\\','/')
         state = self.load_json(state_path)
 
@@ -134,6 +140,7 @@ class MemoryManager:
         for i in range(self.__max_episodic_depth+1):
             ## Initialize all episodic memory caches
             self.__episodic_memory_caches.append(self.MemoryCache(i, self.__token_buffer, self.__max_tokens))
+        self.cache_state()
 
     def cache_state(self):
         ## TODO: Restrict backups to max_backup_states
@@ -144,13 +151,14 @@ class MemoryManager:
         memory_caches = list()
         for i in range(len(self.__episodic_memory_caches)):
             memory_caches.append(self.__episodic_memory_caches[i].cache)
-        
+
         state = {
             "id":unique_id,
             "memory_caches":memory_caches,
             "timestamp":timestamp,
             "timestring":timestring
         }
+
         filename = ('%s_memory_state_%s.json' %(str(timestamp),unique_id))
         filepath = ('%s/%s' % (self.__config['memory_management']['memory_state_dir'], filename))
         self.save_json(filepath, state)
@@ -174,14 +182,16 @@ class MemoryManager:
         with open(filepath, 'w', encoding='utf-8') as outfile:
             json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
 
+    def stash_eidetic_memory(self, speaker, content, timestamp = time()):
+        eidetic_memory, unique_id = generate_eidetic_memory(speaker, content, timestamp)
+        ## Load to pinecone
+
     ## Assemble and index eidetic memories from a message by a speaker
     ## Eidetic memory is the base form of all episodic memory
     def generate_eidetic_memory(self, speaker, content, timestamp = time()):
         unique_id = str(uuid4())
-        summary = ('This is a summary:\n%s' % content)
-        tokens = 1932
-        keywords = "borp"
-        content_vector = [0.1344134,0.31451663]
+
+        summary, keywords, tokens = self.generate_memory_elements(content, 0)
         # summary, tokens, keywords, content_vector = self.generate_eidetic_summary(content)
         timestring = self.timestamp_to_datetime(timestamp)
         eidetic_memory = {
@@ -201,10 +211,8 @@ class MemoryManager:
             "keywords": keywords,
             "depth":0
         }
+
         print(eidetic_memory)
-        ## TODO: update config file to have different memory paths and pinecone memory metadata
-        eidetic_memory_path = ""
-        eidetic_memory_type = ""
         ## Stash the memory in Pinecone and save it locally
         # self.index_memory(eidetic_memory_path, eidetic_memory_type, eidetic_memory, unique_id, content_vector)
         return eidetic_memory, unique_id
@@ -212,10 +220,18 @@ class MemoryManager:
     ## Assemble an eposodic memory from a collection of eidetic or lower-depth episodic memories.
     def generate_episodic_memory(self, memories, depth, timestamp = time()):
         unique_id = str(uuid4())
-        timestring = timestamp_to_datetime(timestamp)
+        timestring = self.timestamp_to_datetime(timestamp)
 
         ## Send collection of memories to be summarized, pass the unique id to set episodic_parent_id
-        summary, tokens, keywords, episodic_vector, memory_ids = self.generate_episodic_summary(memories, unique_id)
+        # summary, tokens, keywords, episodic_vector, memory_ids = self.generate_episodic_summary(memories, unique_id)
+        content = ''
+        memory_ids = ()
+        for memory in memories:
+            content += '%s\n' % memory['summary']
+            memory_ids.append(str(memory['id']))
+        content = "\n".join(result_list)
+        summary, keywords, tokens = self.generate_memory_elements(content)
+
         episodic_memory = {
             "id": unique_id,
             "episodic_parent_id":"",
@@ -233,8 +249,7 @@ class MemoryManager:
             "depth": int(depth)
         }
         ## TODO: update config file to have different memory paths and pinecone memory metadata
-        episodic_memory_path = ""
-        episodic_memory_type = ""
+        print(episodic_memory)
         ## Stash the memory in Pinecone and save it locally
         # self.index_memory(episodic_memory_path, episodic_memory_type, episodic_memory, unique_id, episodic_vector)
         return episodic_memory, unique_id
@@ -249,9 +264,70 @@ class MemoryManager:
         message = '%s: %s' % (memory['original_timestring'], memory['original_summary'])
         return message
 
-    ## Generate a summary for a single message. 
+    def generate_memory_elements(self, content, depth):
+        if int(depth) == 0:
+            prompt_name = 'eidetic_memory'
+        elif int(depth) == 1:
+            prompt_name = 'eidetic_to_episodic_memory'
+        else:
+            prompt_name = 'episodic_to_episodic_memory'
+
+        # vector = gpt3_embedding(content)
+
+        prompt_obj = self.load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
+
+        messages = list()
+        temperature = float(prompt_obj['summary']['temperature'])
+        response_tokens = int(prompt_obj['summary']['response_tokens'])
+        messages.append(self.compose_gpt_message(prompt_obj['summary']['system_message'],'system'))
+        messages.append(self.compose_gpt_message(content,'user'))
+        summary_obj, total_tokens = self.gpt_completion(messages, temperature, response_tokens)
+
+        expected_return_type = str(prompt_obj['summary']['expected_return_type'])
+
+        summary = self.process_gpt_memory_response('summary',summary_obj, expected_return_type)
+
+        messages.clear()
+
+        temperature = float(prompt_obj['keywords']['temperature'])
+        response_tokens = int(prompt_obj['keywords']['response_tokens'])
+        messages.append(self.compose_gpt_message(prompt_obj['keywords']['system_message'],'system'))
+        messages.append(self.compose_gpt_message(content,'user'))
+        keywords_obj, total_tokens = self.gpt_completion(messages, temperature, response_tokens)
+
+        expected_return_type = str(prompt_obj['keywords']['expected_return_type'])
+
+        keywords = self.process_gpt_memory_response('keywords',keywords_obj, expected_return_type)
+
+        return summary, keywords, total_tokens
+
+    ## Generate a summary for a single message.
     ## These summaries are typically shorter than episodic summaries.
     def generate_eidetic_summary(self, content):
+        prompt_obj = self.load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], 'eidetic_memory'))
+
+        messages = list()
+        temperature = float(prompt_obj['summary']['temperature'])
+        response_tokens = int(prompt_obj['summary']['response_tokens'])
+        messages.append(compose_gpt_message(prompt_obj['summary']['system_message'],'system'))
+        messages.append(compose_gpt_message(content,'user'))
+        summary_obj = self.gpt_completion(messages, temperature, response_tokens)
+        expected_return_type = str(prompt_obj['summary']['expected_return_type'])
+
+        summary = self.process_gpt_memory_response('summary',summary_obj, expected_return_type)
+
+        messages.clear()
+        
+        temperature = float(prompt_obj['keywords']['temperature'])
+        response_tokens = int(prompt_obj['keywords']['response_tokens'])
+        messages.append(compose_gpt_message(prompt_obj['keywords']['system_message'],'system'))
+        messages.append(compose_gpt_message(content,'user'))
+        keywords_obj = self.gpt_completion(messages, temperature, response_tokens)
+
+        expected_return_type = str(prompt_obj['keywords']['expected_return_type'])
+
+        keywords = self.process_gpt_memory_response('keywords',keywords_obj, expected_return_type)
+        
         # content_vector = gpt3_embedding(content)
         ## TODO: summarize message content in very short form
         # summary, tokens = self.generate_short_summary(content)
@@ -259,7 +335,7 @@ class MemoryManager:
         # return summary, tokens, keywords, content_vector
         return ""
 
-    ## Generate a summary for a collection of eidetic or episodic memories. 
+    ## Generate a summary for a collection of eidetic or episodic memories.
     ## These summaries are typically shorter than episodic summaries.
     ## Depth is the level of the memories being summarized
     def generate_episodic_summary(self, memories, depth, unique_id):
@@ -273,7 +349,7 @@ class MemoryManager:
                 content += '%s\n\n' % self.format_eidetic_memory(memory)
             else:
                 content += '%s\n\n' % self.format_episodic_memory(memory)
-        
+
         token_estimate = get_token_count(content) ## Do something with this estimate
         episodic_vector = gpt3_embedding(content)
         ## TODO: summarize message content
@@ -281,10 +357,86 @@ class MemoryManager:
         keywords = generate_keywords(content)
 
         return summary, tokens, keywords, episodic_vector, memory_ids
-    
-    
 
-    # ## Update memory with the episodic id. 
+    def process_gpt_memory_response(self, response_name, response_obj, expected_return_type):
+        result = ''
+        if expected_return_type == "string":
+            result = response_obj['response']
+        elif expected_return_type == "list":
+            result_list = list(response_obj['response'])
+            result = "\n".join(result_list)
+
+        result = result.strip()
+        result = re.sub('[\r\n]+', '\n', result)
+        result = re.sub('[\t ]+', ' ', result)
+        return result
+
+    ## The role can be either system or user. If the role is system then you are either giving the model instructions/personas or example prompts.
+    ## Then name field is used for example prompts which guide the model on how to respond.
+    ## If the name field has data, the model will not consider them part of the conversation; the role will be system by default.
+    def compose_gpt_message(self, content, role, name=''):
+        content = content.encode(encoding='ASCII',errors='ignore').decode() ## Cheeky way to remove encoding errors
+        if name == '':
+            return {"role":role, "content": content}
+        else:
+            role = 'system'
+            return {"role":role,"name":name,"content": content}
+
+######################################################
+## Open AI stuff... might move later...
+
+    def gpt3_embedding(self, content):
+        engine = config['open_ai']['input_engine']
+        content = content.encode(encoding='ASCII',errors='ignore').decode()  # fix any UNICODE errors
+        response = openai.Embedding.create(input=content,engine=engine)
+        vector = response['data'][0]['embedding']  # this is a normal list
+        return vector
+
+    def gpt_completion(self, messages, temp=0.0, tokens=400, stop=['USER:', 'RAVEN:']):
+        engine = self.__config['open_ai']['model']
+        top_p=1.0
+        freq_pen=0.0
+        pres_pen=0.0
+
+        max_retry = 5
+        retry = 0
+        while True:
+            try:
+                response = openai.ChatCompletion.create(
+                    model=engine,
+                    messages=messages,
+                    temperature=temp,
+                    max_tokens=tokens,
+                    top_p=top_p,
+                    frequency_penalty=freq_pen,
+                    presence_penalty=pres_pen,
+                    stop=stop)
+
+                self.print_response_stats(response)
+                response_id = str(response['id'])
+                prompt_tokens = int(response['usage']['prompt_tokens'])
+                completion_tokens = int(response['usage']['completion_tokens'])
+                total_tokens = int(response['usage']['total_tokens'])
+                print(response['choices'][0]['message']['content'].strip())
+                response_obj = json.loads(response['choices'][0]['message']['content'].strip())
+                return response_obj, total_tokens
+            except Exception as oops:
+                retry += 1
+                if retry >= max_retry:
+                    return "GPT3.5 error: %s" % oops
+                print('Error communicating with OpenAI:', oops)
+                sleep(2)
+
+    def print_response_stats(self, response):
+        response_id = ('\nResponse %s' % str(response['id']))
+        prompt_tokens = ('\nPrompt Tokens: %s' % (str(response['usage']['prompt_tokens'])))
+        completion_tokens = ('\nCompletion Tokens: %s' % str(response['usage']['completion_tokens']))
+        total_tokens = ('\nTotal Tokens: %s\n' % (str(response['usage']['total_tokens'])))
+        print(response_id + prompt_tokens + completion_tokens + total_tokens)
+######################################################
+
+
+    # ## Update memory with the episodic id.
     # ## Each memory will have a parent (episodic) id to allow for
     # ## recursive retcon updates from either depth direction.
     # def set_episodic_id(self, memory_id, episodic_id, memory_path, memory_type):
@@ -294,7 +446,7 @@ class MemoryManager:
 
     # def index_memory(self, memory_path, memory_type, memory, unique_id, vector):
     #     save_json('%s/%s.json' % (memory_path,unique_id), memory)
-    #     ## TODO: 
+    #     ## TODO:
     #     metadata = {'memory_type': memory_type}
     #     save_vector(vector, unique_id, metadata, memory_type)
     #     return unique_id
@@ -386,7 +538,7 @@ class MemoryManager:
     #                     chunk.append(mem)
     #                     memories_this_chunk += 1
     #                     continue
-                    
+
     #                 if iter >= max_iter:
     #                     chunking_done = True
     #                     blocking_done = True
@@ -407,7 +559,7 @@ class MemoryManager:
     #                 message = format_summary_memory(mem)
     #                 chunked_message += message.strip() + '\n\n'
     #             chunked_message = chunked_message.strip()
-                
+
     #             chunked_prompt = open_file('prompt_notes.txt').replace('<<INPUT>>', chunked_summary + chunked_message)
     #             save_prompt('summary_chunk_prompt_',chunked_prompt)
 

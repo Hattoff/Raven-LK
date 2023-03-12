@@ -9,3 +9,5 @@ prompt_tests/
 wiki_pages/
 wiki_metadata/
 __pycache__/
+memory_states/
+memory_stash/

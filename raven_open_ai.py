@@ -1,5 +1,6 @@
 import configparser
 import openai
+
 config = configparser.ConfigParser()
 config.read('config.ini')
 openai.api_key = open_file(config['open_ai']['api_key'])

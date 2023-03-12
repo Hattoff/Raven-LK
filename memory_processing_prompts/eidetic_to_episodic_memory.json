@@ -1,0 +1,16 @@
+{
+    "keywords":{
+        "system_message":"I will review the message provided to me generate keywords so that all key elements are represented in as little comprehensible text possible. I will format my response like this:\r\n{\r\n\t\"keywords\":[]r\n}",
+        "temperature":0.7,
+        "response_tokens":256,
+        "expected_return_type":"list",
+        "expected_return_name":"keywords"
+    },
+    "summary":{
+        "system_message":"I will write detailed notes of the following conversation. I will format my response like:\r\n{\r\n\t\"notes\":[]\r\n}",
+        "temperature":0.7,
+        "response_tokens":256,
+        "expected_return_type":"list",
+        "expected_return_name":"notes"
+    }
+}
