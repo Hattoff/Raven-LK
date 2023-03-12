@@ -192,7 +192,6 @@ class MemoryManager:
         unique_id = str(uuid4())
 
         summary, keywords, tokens = self.generate_memory_elements(content, 0)
-        # summary, tokens, keywords, content_vector = self.generate_eidetic_summary(content)
         timestring = self.timestamp_to_datetime(timestamp)
         eidetic_memory = {
             "id": unique_id,
@@ -223,7 +222,6 @@ class MemoryManager:
         timestring = self.timestamp_to_datetime(timestamp)
 
         ## Send collection of memories to be summarized, pass the unique id to set episodic_parent_id
-        # summary, tokens, keywords, episodic_vector, memory_ids = self.generate_episodic_summary(memories, unique_id)
         content = ''
         memory_ids = ()
         for memory in memories:
@@ -264,7 +262,9 @@ class MemoryManager:
         message = '%s: %s' % (memory['original_timestring'], memory['original_summary'])
         return message
 
+    ## Generate a summary for a eidetic messages or episodic summaries
     def generate_memory_elements(self, content, depth):
+        ## Choose which memory processing prompt to use, transition states are also included
         if int(depth) == 0:
             prompt_name = 'eidetic_memory'
         elif int(depth) == 1:
@@ -272,21 +272,22 @@ class MemoryManager:
         else:
             prompt_name = 'episodic_to_episodic_memory'
 
-        # vector = gpt3_embedding(content)
-
+        ## Load the prompt from a .json file
         prompt_obj = self.load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
 
+        ## Messages will be passed on to GPT, in this case it passes as system message and user prompt
+        ## Generate memory summaries
         messages = list()
         temperature = float(prompt_obj['summary']['temperature'])
         response_tokens = int(prompt_obj['summary']['response_tokens'])
         messages.append(self.compose_gpt_message(prompt_obj['summary']['system_message'],'system'))
         messages.append(self.compose_gpt_message(content,'user'))
         summary_obj, total_tokens = self.gpt_completion(messages, temperature, response_tokens)
-
         expected_return_type = str(prompt_obj['summary']['expected_return_type'])
-
+        ## Get summary to stash in local memory store
         summary = self.process_gpt_memory_response('summary',summary_obj, expected_return_type)
 
+        ## Clear all messages and generate memory keywords
         messages.clear()
 
         temperature = float(prompt_obj['keywords']['temperature'])
@@ -294,69 +295,23 @@ class MemoryManager:
         messages.append(self.compose_gpt_message(prompt_obj['keywords']['system_message'],'system'))
         messages.append(self.compose_gpt_message(content,'user'))
         keywords_obj, total_tokens = self.gpt_completion(messages, temperature, response_tokens)
-
         expected_return_type = str(prompt_obj['keywords']['expected_return_type'])
 
         keywords = self.process_gpt_memory_response('keywords',keywords_obj, expected_return_type)
 
+        ## TODO: cache the new memories and propogate memory compression.
         return summary, keywords, total_tokens
 
-    ## Generate a summary for a single message.
-    ## These summaries are typically shorter than episodic summaries.
-    def generate_eidetic_summary(self, content):
-        prompt_obj = self.load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], 'eidetic_memory'))
-
-        messages = list()
-        temperature = float(prompt_obj['summary']['temperature'])
-        response_tokens = int(prompt_obj['summary']['response_tokens'])
-        messages.append(compose_gpt_message(prompt_obj['summary']['system_message'],'system'))
-        messages.append(compose_gpt_message(content,'user'))
-        summary_obj = self.gpt_completion(messages, temperature, response_tokens)
-        expected_return_type = str(prompt_obj['summary']['expected_return_type'])
-
-        summary = self.process_gpt_memory_response('summary',summary_obj, expected_return_type)
-
-        messages.clear()
-        
-        temperature = float(prompt_obj['keywords']['temperature'])
-        response_tokens = int(prompt_obj['keywords']['response_tokens'])
-        messages.append(compose_gpt_message(prompt_obj['keywords']['system_message'],'system'))
-        messages.append(compose_gpt_message(content,'user'))
-        keywords_obj = self.gpt_completion(messages, temperature, response_tokens)
-
-        expected_return_type = str(prompt_obj['keywords']['expected_return_type'])
-
-        keywords = self.process_gpt_memory_response('keywords',keywords_obj, expected_return_type)
-        
-        # content_vector = gpt3_embedding(content)
-        ## TODO: summarize message content in very short form
-        # summary, tokens = self.generate_short_summary(content)
-        # keywords = generate_keywords(content)
-        # return summary, tokens, keywords, content_vector
-        return ""
-
-    ## Generate a summary for a collection of eidetic or episodic memories.
-    ## These summaries are typically shorter than episodic summaries.
-    ## Depth is the level of the memories being summarized
-    def generate_episodic_summary(self, memories, depth, unique_id):
-        memory_ids = list() ## TODO: Get each memory id
-        content = '' ## TODO: Extract summaries
-        ## TODO: for each memory in memory id list, update episodic id
-        for memory in memories:
-            memory_ids.append(memory['id'])
-            set_episodic_id(memory, unique_id)
-            if depth == 0:
-                content += '%s\n\n' % self.format_eidetic_memory(memory)
-            else:
-                content += '%s\n\n' % self.format_episodic_memory(memory)
-
-        token_estimate = get_token_count(content) ## Do something with this estimate
-        episodic_vector = gpt3_embedding(content)
-        ## TODO: summarize message content
-        summary, tokens = generate_summary(content)
-        keywords = generate_keywords(content)
-
-        return summary, tokens, keywords, episodic_vector, memory_ids
+    ## The role can be either system or user. If the role is system then you are either giving the model instructions/personas or example prompts.
+    ## Then name field is used for example prompts which guide the model on how to respond.
+    ## If the name field has data, the model will not consider them part of the conversation; the role will be system by default.
+    def compose_gpt_message(self, content, role, name=''):
+        content = content.encode(encoding='ASCII',errors='ignore').decode() ## Cheeky way to remove encoding errors
+        if name == '':
+            return {"role":role, "content": content}
+        else:
+            role = 'system'
+            return {"role":role,"name":name,"content": content}
 
     def process_gpt_memory_response(self, response_name, response_obj, expected_return_type):
         result = ''
@@ -370,17 +325,6 @@ class MemoryManager:
         result = re.sub('[\r\n]+', '\n', result)
         result = re.sub('[\t ]+', ' ', result)
         return result
-
-    ## The role can be either system or user. If the role is system then you are either giving the model instructions/personas or example prompts.
-    ## Then name field is used for example prompts which guide the model on how to respond.
-    ## If the name field has data, the model will not consider them part of the conversation; the role will be system by default.
-    def compose_gpt_message(self, content, role, name=''):
-        content = content.encode(encoding='ASCII',errors='ignore').decode() ## Cheeky way to remove encoding errors
-        if name == '':
-            return {"role":role, "content": content}
-        else:
-            role = 'system'
-            return {"role":role,"name":name,"content": content}
 
 ######################################################
 ## Open AI stuff... might move later...

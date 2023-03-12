@@ -2,12 +2,12 @@
 key_openai.txt
 key_pinecone.txt
 # Log files and memory indexes
-nexus/
-gpt3_logs/
-summary_prompts/
-prompt_tests/
-wiki_pages/
-wiki_metadata/
+nexus/*
+gpt3_logs/*
+summary_prompts/*
+prompt_tests/*
+wiki_pages/*
+wiki_metadata/*
 __pycache__/
-memory_states/
-memory_stash/
+memory_management/memory_states/*
+memory_management/memory_stash/*
