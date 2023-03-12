@@ -37,9 +37,9 @@ class MemoryManager:
         ## Depth should not be changed after initialization.
         ## If cache is not empty then load it, otherwise start fresh.Cache should be JSON.
         def __init__(self, depth, token_buffer, max_tokens, cache=None):
-            self.__depth = depth
-            self.__token_buffer = token_buffer
-            self.__max_tokens = max_tokens
+            self.__depth = int(depth)
+            self.__token_buffer = int(token_buffer)
+            self.__max_tokens = int(max_tokens)
             self.__memories = list()
             ## token count is the token estimate for each memory without modification
             self.__token_count = 0
@@ -91,19 +91,19 @@ class MemoryManager:
         ## Memories are in the raven eidetic or episodic JSON format
         ## Memory space check is NOT enforced so check it before adding a memory
         def add_memory(self, memory, number_of_tokens):
-            self.__token_count += number_of_tokens
+            self.__token_count += int(number_of_tokens)
             self.__memories.append(memory)
             ## If no more memory space return True, this will trigger a memory compression
             return not (self.has_memory_space(0))
 
         ## Before adding a memory, check to see if there will be space with next memory.
-        def has_memory_space(next_number_of_tokens):
-            if self.__token_count + next_number_of_tokens <= (self.__max_tokens - self.__token_buffer):
+        def has_memory_space(self, next_number_of_tokens):
+            if self.__token_count + int(next_number_of_tokens) <= (self.__max_tokens - self.__token_buffer):
                 return True
             else:
                 return False
 
-        def flush_memory_cache():
+        def flush_memory_cache(self):
             self.__memories.clear()
             self.__token_count = 0
 
@@ -162,6 +162,7 @@ class MemoryManager:
         filename = ('%s_memory_state_%s.json' %(str(timestamp),unique_id))
         filepath = ('%s/%s' % (self.__config['memory_management']['memory_state_dir'], filename))
         self.save_json(filepath, state)
+        self.breakpoint('State saved...')
 
     def timestamp_to_datetime(self, unix_time):
         return datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M:%S%p %Z")
@@ -189,10 +190,15 @@ class MemoryManager:
     ## Assemble and index eidetic memories from a message by a speaker
     ## Eidetic memory is the base form of all episodic memory
     def generate_eidetic_memory(self, speaker, content, timestamp = time()):
+        self.breakpoint('Generating eidetic memory...')
         unique_id = str(uuid4())
-
-        summary, keywords, tokens = self.generate_memory_elements(content, 0)
         timestring = self.timestamp_to_datetime(timestamp)
+        depth = 0
+
+        keywords = (self.generate_memory_element('keywords', content, depth))['response']
+        summary = '%s: %s - %s' % (speaker, timestring, content)
+        tokens = self.get_token_estimate(summary)
+
         eidetic_memory = {
             "id": unique_id,
             "episodic_parent_id":"",
@@ -208,16 +214,16 @@ class MemoryManager:
             "retcon_time": "",
             "retcon_tokens":0,
             "keywords": keywords,
-            "depth":0
+            "depth":int(depth)
         }
 
-        print(eidetic_memory)
-        ## Stash the memory in Pinecone and save it locally
-        # self.index_memory(eidetic_memory_path, eidetic_memory_type, eidetic_memory, unique_id, content_vector)
+        self.add_memmory(eidetic_memory, tokens, int(depth))
+        
         return eidetic_memory, unique_id
 
     ## Assemble an eposodic memory from a collection of eidetic or lower-depth episodic memories.
     def generate_episodic_memory(self, memories, depth, timestamp = time()):
+        self.breakpoint('Generating episodic memory of cache depth (%s)...' % str(depth))
         unique_id = str(uuid4())
         timestring = self.timestamp_to_datetime(timestamp)
 
@@ -228,7 +234,11 @@ class MemoryManager:
             content += '%s\n' % memory['summary']
             memory_ids.append(str(memory['id']))
         content = "\n".join(result_list)
-        summary, keywords, tokens = self.generate_memory_elements(content)
+
+        keywords = (self.generate_memory_element('keywords', content, depth))['response']
+        summary_obj = self.generate_memory_element('summary', content, depth)
+        summary = self.flatten_gpt_memory_response(summary_obj)
+        tokens = self.get_token_estimate(summary)
 
         episodic_memory = {
             "id": unique_id,
@@ -246,11 +256,29 @@ class MemoryManager:
             "keywords": keywords,
             "depth": int(depth)
         }
-        ## TODO: update config file to have different memory paths and pinecone memory metadata
-        print(episodic_memory)
-        ## Stash the memory in Pinecone and save it locally
-        # self.index_memory(episodic_memory_path, episodic_memory_type, episodic_memory, unique_id, episodic_vector)
+
+        self.add_memmory(episodic_memory, tokens, int(depth))
+
         return episodic_memory, unique_id
+
+    def add_memmory(self, memory, tokens, depth):
+        self.breakpoint('adding memory to cache (%s)' % str(depth))
+        if self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
+            self.breakpoint('There is enough space in the cache...')
+            self.__episodic_memory_caches[int(depth)].add_memory(memory, tokens)
+        else:
+            self.breakpoint('There is not enough space in the cache, compressing...')
+            self.compress_memory_cache(depth)
+            self.__episodic_memory_caches[int(depth)].flush_memory_cache()
+        self.breakpoint('Saving state...')
+        self.cache_state()
+
+    def compress_memory_cache(self, depth):
+        self.breakpoint('Compressing cache of depth (%s)...' % str(depth))
+        memories = self.__episodic_memory_caches[int(depth)].memories
+        self.breakpoint('Pushing compressed memory to cache of depth (%s)...' % str(int(depth)+1))
+        self.generate_episodic_memory(memories, int(depth)+1)
+        self.breakpoint('Flushing cache of depth (%s)...' % str(depth))
 
     ## Format eidetic memory with a speaker and timestamp for context
     def format_eidetic_memory(self, memory):
@@ -262,8 +290,8 @@ class MemoryManager:
         message = '%s: %s' % (memory['original_timestring'], memory['original_summary'])
         return message
 
-    ## Generate a summary for a eidetic messages or episodic summaries
-    def generate_memory_elements(self, content, depth):
+    ## Generate a summary, keyword, or other element for a eidetic messages or episodic summaries
+    def generate_memory_element(self, element_type, content, depth):
         ## Choose which memory processing prompt to use, transition states are also included
         if int(depth) == 0:
             prompt_name = 'eidetic_memory'
@@ -276,31 +304,14 @@ class MemoryManager:
         prompt_obj = self.load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
 
         ## Messages will be passed on to GPT, in this case it passes as system message and user prompt
-        ## Generate memory summaries
+        ## Generate memory element
         messages = list()
-        temperature = float(prompt_obj['summary']['temperature'])
-        response_tokens = int(prompt_obj['summary']['response_tokens'])
-        messages.append(self.compose_gpt_message(prompt_obj['summary']['system_message'],'system'))
+        temperature = float(prompt_obj[element_type]['temperature'])
+        response_tokens = int(prompt_obj[element_type]['response_tokens'])
+        messages.append(self.compose_gpt_message(prompt_obj[element_type]['system_message'],'system'))
         messages.append(self.compose_gpt_message(content,'user'))
-        summary_obj, total_tokens = self.gpt_completion(messages, temperature, response_tokens)
-        expected_return_type = str(prompt_obj['summary']['expected_return_type'])
-        ## Get summary to stash in local memory store
-        summary = self.process_gpt_memory_response('summary',summary_obj, expected_return_type)
-
-        ## Clear all messages and generate memory keywords
-        messages.clear()
-
-        temperature = float(prompt_obj['keywords']['temperature'])
-        response_tokens = int(prompt_obj['keywords']['response_tokens'])
-        messages.append(self.compose_gpt_message(prompt_obj['keywords']['system_message'],'system'))
-        messages.append(self.compose_gpt_message(content,'user'))
-        keywords_obj, total_tokens = self.gpt_completion(messages, temperature, response_tokens)
-        expected_return_type = str(prompt_obj['keywords']['expected_return_type'])
-
-        keywords = self.process_gpt_memory_response('keywords',keywords_obj, expected_return_type)
-
-        ## TODO: cache the new memories and propogate memory compression.
-        return summary, keywords, total_tokens
+        element_obj, total_tokens = self.gpt_completion(messages, temperature, response_tokens)
+        return element_obj
 
     ## The role can be either system or user. If the role is system then you are either giving the model instructions/personas or example prompts.
     ## Then name field is used for example prompts which guide the model on how to respond.
@@ -313,24 +324,30 @@ class MemoryManager:
             role = 'system'
             return {"role":role,"name":name,"content": content}
 
-    def process_gpt_memory_response(self, response_name, response_obj, expected_return_type):
+    def flatten_gpt_memory_response(self, response_obj):
         result = ''
-        if expected_return_type == "string":
+        response_type = type(response_obj['response'])
+        print('this is the response type: %s' % response_type)
+        if response_type == "str":
             result = response_obj['response']
-        elif expected_return_type == "list":
+        elif response_type == "list":
             result_list = list(response_obj['response'])
-            result = "\n".join(result_list)
+            result = '\n:'.join('-%s' % sub for sub in result_list)
 
         result = result.strip()
         result = re.sub('[\r\n]+', '\n', result)
         result = re.sub('[\t ]+', ' ', result)
         return result
 
+    ## Debug functions
+    def breakpoint(self, message = '\n\nEnter to continue...'):
+        input(message)
+
 ######################################################
 ## Open AI stuff... might move later...
 
     def gpt3_embedding(self, content):
-        engine = config['open_ai']['input_engine']
+        engine = self.__config['open_ai']['input_engine']
         content = content.encode(encoding='ASCII',errors='ignore').decode()  # fix any UNICODE errors
         response = openai.Embedding.create(input=content,engine=engine)
         vector = response['data'][0]['embedding']  # this is a normal list
@@ -377,6 +394,13 @@ class MemoryManager:
         completion_tokens = ('\nCompletion Tokens: %s' % str(response['usage']['completion_tokens']))
         total_tokens = ('\nTotal Tokens: %s\n' % (str(response['usage']['total_tokens'])))
         print(response_id + prompt_tokens + completion_tokens + total_tokens)
+
+    def get_token_estimate(self, content):
+        content = content.encode(encoding='ASCII',errors='ignore').decode()  # fix any UNICODE errors
+        encoding = tiktoken.encoding_for_model(str(self.__config['open_ai']['model']))
+        tokens = encoding.encode(content)
+        token_count = len(tokens)
+        return token_count
 ######################################################
 
 
