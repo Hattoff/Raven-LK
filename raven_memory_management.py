@@ -37,6 +37,7 @@ class MemoryManager:
         ## Depth should not be changed after initialization.
         ## If cache is not empty then load it, otherwise start fresh.Cache should be JSON.
         def __init__(self, depth, token_buffer, max_tokens, cache=None):
+            self.__id = str(uuid4())
             self.__depth = int(depth)
             self.__token_buffer = int(token_buffer)
             self.__max_tokens = int(max_tokens)
@@ -66,25 +67,30 @@ class MemoryManager:
         def token_count(self):
             return self.__token_count
 
+        ## Set all class attributes from the cache JSON
         def import_cache(self, cache):
-            ## Set all class attributes from the cache JSON
-            ## If cache is invalid, throw error.
-            return ""
+            self.__id = str(cache['id'])
+            self.__depth = int(cache['depth'])
+            self.__token_buffer = int(cache['token_buffer'])
+            self.__max_tokens = int(cache['max_tokens'])
+            self.__token_count = int(cache['token_count'])
+            self.__memories = list(cache['memories'])
+            ## TODO: If cache is invalid, throw error.
 
         ## Return a JSON version of this object to save
         @property
         def cache(self):
             timestamp = time()
-            unique_id = str(uuid4())
-            timestring = datetime.datetime.fromtimestamp(timestamp).strftime("%A, %B %d, %Y at %I:%M:%S%p %Z")
+            timestring = (datetime.datetime.fromtimestamp(timestamp).strftime("%A, %B %d, %Y at %I:%M:%S%p %Z")).strip()
             cache = {
+                "id":self.__id,
                 "depth":self.__depth,
                 "token_buffer":self.__token_buffer,
                 "max_tokens":self.__max_tokens,
                 "memories":self.__memories,
+                "token_count":self.__token_count,
                 "timestamp": timestamp,
-                "timestring": timestring,
-                "id":unique_id
+                "timestring": timestring
             }
             return cache
 
@@ -106,6 +112,7 @@ class MemoryManager:
         def flush_memory_cache(self):
             self.__memories.clear()
             self.__token_count = 0
+            self.__id = str(uuid4())
 
     @property
     def episodic_memory_caches(self):
@@ -162,10 +169,10 @@ class MemoryManager:
         filename = ('%s_memory_state_%s.json' %(str(timestamp),unique_id))
         filepath = ('%s/%s' % (self.__config['memory_management']['memory_state_dir'], filename))
         self.save_json(filepath, state)
-        self.breakpoint('State saved...')
+        print('State saved...')
 
     def timestamp_to_datetime(self, unix_time):
-        return datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M:%S%p %Z")
+        return (datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M:%S%p %Z")).strip()
 
     def open_file(self, filepath):
         with open(filepath, 'r', encoding='utf-8') as infile:
@@ -190,7 +197,7 @@ class MemoryManager:
     ## Assemble and index eidetic memories from a message by a speaker
     ## Eidetic memory is the base form of all episodic memory
     def generate_eidetic_memory(self, speaker, content, timestamp = time()):
-        self.breakpoint('Generating eidetic memory...')
+        print('Generating eidetic memory...')
         unique_id = str(uuid4())
         timestring = self.timestamp_to_datetime(timestamp)
         depth = 0
@@ -223,7 +230,7 @@ class MemoryManager:
 
     ## Assemble an eposodic memory from a collection of eidetic or lower-depth episodic memories.
     def generate_episodic_memory(self, memories, depth, timestamp = time()):
-        self.breakpoint('Generating episodic memory of cache depth (%s)...' % str(depth))
+        print('Generating episodic memory of cache depth (%s)...' % str(depth))
         unique_id = str(uuid4())
         timestring = self.timestamp_to_datetime(timestamp)
 
@@ -262,23 +269,23 @@ class MemoryManager:
         return episodic_memory, unique_id
 
     def add_memmory(self, memory, tokens, depth):
-        self.breakpoint('adding memory to cache (%s)' % str(depth))
+        print('adding memory to cache (%s)' % str(depth))
         if self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
-            self.breakpoint('There is enough space in the cache...')
+            print('There is enough space in the cache...')
             self.__episodic_memory_caches[int(depth)].add_memory(memory, tokens)
         else:
-            self.breakpoint('There is not enough space in the cache, compressing...')
+            print('There is not enough space in the cache, compressing...')
             self.compress_memory_cache(depth)
             self.__episodic_memory_caches[int(depth)].flush_memory_cache()
-        self.breakpoint('Saving state...')
+        print('Saving state...')
         self.cache_state()
 
     def compress_memory_cache(self, depth):
-        self.breakpoint('Compressing cache of depth (%s)...' % str(depth))
+        print('Compressing cache of depth (%s)...' % str(depth))
         memories = self.__episodic_memory_caches[int(depth)].memories
-        self.breakpoint('Pushing compressed memory to cache of depth (%s)...' % str(int(depth)+1))
+        print('Pushing compressed memory to cache of depth (%s)...' % str(int(depth)+1))
         self.generate_episodic_memory(memories, int(depth)+1)
-        self.breakpoint('Flushing cache of depth (%s)...' % str(depth))
+        print('Flushing cache of depth (%s)...' % str(depth))
 
     ## Format eidetic memory with a speaker and timestamp for context
     def format_eidetic_memory(self, memory):
@@ -341,7 +348,7 @@ class MemoryManager:
 
     ## Debug functions
     def breakpoint(self, message = '\n\nEnter to continue...'):
-        input(message)
+        input(message+'\n')
 
 ######################################################
 ## Open AI stuff... might move later...
