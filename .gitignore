@@ -8,3 +8,4 @@ summary_prompts/
 prompt_tests/
 wiki_pages/
 wiki_metadata/
+__pycache__/

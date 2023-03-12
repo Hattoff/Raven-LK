@@ -1,0 +1,7 @@
+Compare the two summaries below.
+
+original:
+<<ORIGINAL_SUMMARY>>
+
+retconned:
+<<RETCONNED_SUMMARY>>

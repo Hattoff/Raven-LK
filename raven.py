@@ -11,121 +11,14 @@ import datetime
 import pinecone
 import math
 import glob
+from raven_memory_management import *
+from raven_open_ai import *
 
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-def open_file(filepath):
-    with open(filepath, 'r', encoding='utf-8') as infile:
-        return infile.read()
-
-
-def save_file(filepath, content):
-    with open(filepath, 'w', encoding='utf-8') as outfile:
-        outfile.write(content)
-
-
-def load_json(filepath):
-    with open(filepath, 'r', encoding='utf-8') as infile:
-        return json.load(infile)
-
-
-def save_json(filepath, payload):
-    with open(filepath, 'w', encoding='utf-8') as outfile:
-        json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
-
-
 def timestamp_to_datetime(unix_time):
     return datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M%p %Z")
-
-
-def gpt3_embedding(content):
-    engine = config['open_ai']['input_engine']
-    content = content.encode(encoding='ASCII',errors='ignore').decode()  # fix any UNICODE errors
-    response = openai.Embedding.create(input=content,engine=engine)
-    vector = response['data'][0]['embedding']  # this is a normal list
-    return vector
-
-def print_response_stats(response):
-    response_id = ('\nResponse %s' % str(response['id']))
-    prompt_tokens = ('\nPrompt Tokens: %s' % (str(response['usage']['prompt_tokens'])))
-    completion_tokens = ('\nCompletion Tokens: %s' % str(response['usage']['completion_tokens']))
-    total_tokens = ('\nTotal Tokens: %s\n' % (str(response['usage']['total_tokens'])))
-    print(response_id + prompt_tokens + completion_tokens + total_tokens)
-
-def gpt_completion(prompt, engine=config['open_ai']['model'], temp=0.0, top_p=1.0, tokens=400, freq_pen=0.0, pres_pen=0.0, stop=['USER:', 'RAVEN:']):
-    if 'gpt-3.5-turbo' in engine:
-        return gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop)
-    else:
-        return gpt3_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop)
-
-def gpt3_5_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop):
-    max_retry = 5
-    retry = 0
-    prompt = prompt.encode(encoding='ASCII',errors='ignore').decode()
-    while True:
-        try:
-            response = openai.ChatCompletion.create(
-                model=engine,
-                messages=[
-                    {'role': 'user', 'content': prompt}
-                ],
-                temperature=temp,
-                max_tokens=tokens,
-                top_p=top_p,
-                frequency_penalty=freq_pen,
-                presence_penalty=pres_pen,
-                stop=stop)
-
-            print_response_stats(response)
-            text = response['choices'][0]['message']['content'].strip()
-            text = re.sub('[\r\n]+', '\n', text)
-            text = re.sub('[\t ]+', ' ', text)
-            filename = '%s_gpt3.txt' % time()
-            foldername = config['raven']['gpt_log_dir']
-            if not os.path.exists(foldername):
-                os.makedirs(foldername)
-            save_file('%s/%s' % (foldername,filename), prompt + '\n\n==========\n\n' + text)
-            # print(text)
-            # print('\nAbove are the text results from the prompt...')
-            return text
-        except Exception as oops:
-            retry += 1
-            if retry >= max_retry:
-                return "GPT3.5 error: %s" % oops
-            print('Error communicating with OpenAI:', oops)
-            sleep(2)
-
-def gpt3_completion(prompt, engine, temp, top_p, tokens, freq_pen, pres_pen, stop):
-    max_retry = 5
-    retry = 0
-    prompt = prompt.encode(encoding='ASCII',errors='ignore').decode()
-    while True:
-        try:
-            response = openai.Completion.create(
-                engine=engine,
-                prompt=prompt,
-                temperature=temp,
-                max_tokens=tokens,
-                top_p=top_p,
-                frequency_penalty=freq_pen,
-                presence_penalty=pres_pen,
-                stop=stop)
-            text = response['choices'][0]['text'].strip()
-            text = re.sub('[\r\n]+', '\n', text)
-            text = re.sub('[\t ]+', ' ', text)
-            filename = '%s_gpt3.txt' % time()
-            foldername = config['raven']['gpt_log_dir']
-            if not os.path.exists(foldername):
-                os.makedirs(foldername)
-            save_file('%s/%s' % (foldername,filename), prompt + '\n\n==========\n\n' + text)
-            return text
-        except Exception as oops:
-            retry += 1
-            if retry >= max_retry:
-                return "GPT3 error: %s" % oops
-            print('Error communicating with OpenAI:', oops)
-            sleep(2)
 
 def load_conversation(pinecone_results, current_prompt_id = ''):
     recalled = list()
@@ -140,131 +33,27 @@ def load_conversation(pinecone_results, current_prompt_id = ''):
     messages = [i['message'] for i in ordered]
     return '\n'.join(messages).strip(), recalled
 
-def summarize_memories(memories):  # summarize a block of memories into one payload
-    memories = sorted(memories, key=lambda d: d['time'], reverse=False)  # sort them chronologically
-    blocked_summary = '' ## TODO: Implement block summary strategy
-    chunked_summary = ''
-    blocks = chunk_memories(memories)
-    block_count = len(blocks)
-    for chunks in blocks:
-        chunked_summary = '' # Combine all chunk summaries into one long prompt and use it for context
-        for chunk in chunks:
-            chunked_message = '' # Combine all memories into a long prompt and have it summarized
-            for mem in chunk:
-                message = format_summary_memory(mem)
-                chunked_message += message.strip() + '\n\n'
-            chunked_message = chunked_message.strip()
-            
-            chunked_prompt = open_file('prompt_notes.txt').replace('<<INPUT>>', chunked_summary + chunked_message)
-            save_prompt('summary_chunk_prompt_',chunked_prompt)
 
-            chunked_notes = gpt_completion(chunked_prompt)
-            save_prompt('summary_chunk_notes_',chunked_notes)
-
-            chunked_summary = chunked_notes.strip() + '\n'
-    return chunked_summary.strip()
-
-def format_summary_memory(memory):
-    message = '%s: %s - %s' % (memory['speaker'], memory['timestring'], memory['message'])
-    return message
-
-#### Breakup memories into chunks so they meet token restrictions
-def chunk_memories(memories, token_response_limit=int(config['raven']['summary_token_response'])):
-    #### Each subsequent chunk will subtract the max_token_input from the token_response_limit
-    max_token_input = int(config['open_ai']['max_token_input'])
-    token_per_character = int(config['open_ai']['token_per_character'])
-
-    blocks = list() # When the token limit overflows after chunking, a new block will be needed
-    chunks = list() # All chunks which will fall within the token limit including responses go here
-    chunk = list() # All memories which will fall within the token limit will go here
-
-    memory_count = len(memories)-1
-    block_count = 0
-    block_token_response_limit = token_response_limit
-    current_memory_index = 0
-
-    max_iter = 100 # If this is hit there is something wrong
-    iter = 0
-
-    blocking_done = False
-    while not blocking_done:
-        chunking_done = False
-        ## TODO: Come back to this decision of doubling the token response limit for each block
-        ## Initial reasoning behind this, a summary of summaries for the chunks would be created
-        ## then a summary of the next block, so we would need double the response space for each block.
-        block_token_response_limit = (2 * block_count * token_response_limit)
-        remaining_chunk_tokens = max_token_input - block_token_response_limit
-        while not chunking_done:
-            chunk_length = 0
-            chunk.clear()
-            memories_this_chunk = 0
-            for i in range(current_memory_index, memory_count):
-                iter += 1
-                mem = memories[i]
-                message = format_summary_memory(mem)
-                ## TODO: Get actual token length from open ai
-                message_length = math.ceil(len(message)/token_per_character) # Estimate token length
-                chunk_length += message_length
-                if chunk_length > remaining_chunk_tokens and memories_this_chunk == 0:
-                    current_memory_index = i
-                    #### Chunking cannot continue, new block will be created
-                    block_count += 1
-                    blocks.append(chunks.copy())
-                    chunking_done = True
-                    breakpoint('\n\nChunking cannot continue until a new block is created...\n\n')
-                    break
-                elif chunk_length > remaining_chunk_tokens:
-                    current_memory_index = i
-                    #### Chunking can continue, new chunk will be created
-                    remaining_chunk_tokens -= token_response_limit
-                    chunks.append(chunk.copy())
-                    chunking_done = True
-                    break
-                elif i == memory_count-1:
-                    #### End of process, append remaining chunk and add chunks to block
-                    chunk.append(mem)
-                    chunks.append(chunk.copy())
-                    blocks.append(chunks.copy())
-                    chunking_done = True
-                    blocking_done = True
-                else:
-                    #### Chunking continues, decrement remaining tokens
-                    chunk.append(mem)
-                    memories_this_chunk += 1
-                    continue
-                
-                if iter >= max_iter:
-                    chunking_done = True
-                    blocking_done = True
-                    breakpoint('\n\nSomething went wrong with the memory chunker. Max iterations reached.\n\n')
-    return blocks
-
-
-#### get user input, vectorize it, index it, save to pinecone
+## get user input, vectorize it, index it, save to pinecone
 def prompt_user(payload = list(), cache_message = False):
     user_input = input('\n\nUSER: ')
     vector = gpt3_embedding(user_input)
     message, unique_id = generate_message_metadata('USER',user_input)
     if cache_message:
-        index_message(message,unique_id)
+        nexus_message(message,unique_id)
         mem_wipe = open('mem_wipe.txt','a')
         mem_wipe.write('%s\n' % str(unique_id))
         mem_wipe.close()
     payload.append((unique_id, vector))
     return payload, vector, unique_id
 
-#### Index message with unique id and save it locally for memeory recall
-def index_message(msg, unique_id=str(uuid4())):
-    save_json('%s/%s.json' % (config['raven']['nexus_dir'],unique_id), msg)
-    return unique_id
-
-#### Generate message metadata for logging and memory indexing
+## Generate message metadata for logging and memory indexing
 def generate_message_metadata(speaker, msg, timestamp = time(), unique_id=str(uuid4())):
     timestring = timestamp_to_datetime(timestamp)
     message = {'speaker': speaker, 'time': timestamp, 'message': msg, 'timestring': timestring, 'uuid': unique_id}
     return message, unique_id
 
-#### Debug functions
+## Debug functions
 def breakpoint(message = '\n\nEnter to continue...'):
     input(message)
 
@@ -276,26 +65,8 @@ def print_pinecone_results(results):
         print(info)
 
 
-#### Get the last n conversation memories
-def get_recent_messages(message_history_count = 30, sort_decending = True):
-    files = glob.glob('%s/*.json' % config['raven']['nexus_dir'])
-    files.sort(key=os.path.getmtime, reverse=True)
-    if len(files) < message_history_count:
-        message_history_count = len(files)-1
-    # print(files)
-    messages = list()
-    for message in list(files):
-        message = message.replace('\\','/')
-        info = load_json(message)
-        messages.append(info)
-    return_messages = messages[0:message_history_count]
-    if sort_decending:
-        sorted(return_messages, key=lambda d: d['time'], reverse=False)
-    return return_messages
-
-
-#### Based on a conversation notes and recent messages determine if the most recent question
-#### could be answered with the information provided of if another query is needed.
+## Based on a conversation notes and recent messages determine if the most recent question
+## could be answered with the information provided of if another query is needed.
 def determine_query(memories, conversation_notes):
     recent_messages = ''
     for mem in memories:
@@ -332,8 +103,8 @@ def determine_query(memories, conversation_notes):
     print(msg)
     return action, keywords, reason, response
 
-#### Based on a conversation notes and recent messages use prompt to determine
-#### if the most recent message was a question, statement, request to modify, or request to create
+## Based on a conversation notes and recent messages use prompt to determine
+## if the most recent message was a question, statement, request to modify, or request to create
 def determine_intent(memories, conversation_notes):
     recent_messages = ''
     for mem in memories:
@@ -374,10 +145,6 @@ def determine_intent(memories, conversation_notes):
     msg = ('\nSpeaker: %s\nIntent: %s\nKeywords: %s\nReason: %s\nResponse: %s\n' % (speaker, intent, keywords, reason, response))
     print(msg)
     return speaker, intent, keywords, reason, response
-
-def save_prompt(prompt_prefix, content):
-    prompt_results_filename = '%s%s.json' % (prompt_prefix,time())
-    save_json('summary_prompts/%s' % prompt_results_filename, content)
 
 def subprocess_input(memories, notes, most_recent_message):
     recent_messages_combined=''
@@ -461,35 +228,48 @@ def vectorize_wiki_page(filename):
     payload.append(pinecone_payload)
     vdb.upsert(payload, namespace='wiki_pages')
 
-def query_pinecone(vector, return_n, name_space = "", search_all = False):
-    vdb = pinecone.Index(config['pinecone']['index'])
-    if search_all:
-        results = vdb.query(vector=vector, top_k=return_n)
+## The depth is the current referenced memory depth, not the next episodic depth
+def compress_summaries(memories, depth):
+    ## When memories of a particular depth exceed the token length then
+    ## compress them into the next episodic depth and flush the cache
+    return ""
+
+def compress_messages(messages):
+    ## When the message token count exceeds the token length then compress
+    ## them into the first episodic memory and flush the cache
+    return ""
+
+
+
+## The role can be either system or user. If the role is system then you are either giving the model instructions/personas or example prompts.
+## Then name field is used for example prompts which guide the model on how to respond.
+## If the name field has data, the model will not consider them part of the conversation; the role will be system by default.
+def compose_gpt_message(content,role,name=''):
+    if name == '':
+        return {"role":role, "content": content}
     else:
-        results = vdb.query(vector=vector, top_k=return_n, namespace=name_space)
-    return results
+        role = 'system'
+        return {"role":role,"name":name,"content": content}
+
+
+
+
+
+
 
 if __name__ == '__main__':
-    convo_length = 30
-    openai.api_key = open_file(config['open_ai']['api_key'])
-    pinecone.init(api_key=open_file(config['pinecone']['api_key']), environment=config['pinecone']['environment'])
-    vdb = pinecone.Index(config['pinecone']['index'])
-    # payload = list()
-    # payload.append((unique_id, vector))
-    # vdb.upsert(payload)
-    # vectorize_wiki_page('echo')
-    # breakpoint('index complete.')
+
     while True:
-        #### Prepare payload for pinecone upload
+        ## Prepare payload for pinecone upload
         payload = list()
         payload, vector, prompt_id = prompt_user(payload, True)
-        #### Search for relevant messages, and generate a response
+        ## Search for relevant messages, and generate a response
         print('Searching for context...')
         vdb.upsert(payload)
         results = vdb.query(vector=vector, top_k=convo_length)
-        #### Search for story elements related to the topic needing queried.
+        ## Search for story elements related to the topic needing queried.
         # results = vdb.query(vector=vector, top_k=convo_length, namespace="story-elements")
-        #### Load past conversations which match the user prompt and summarize
+        ## Load past conversations which match the user prompt and summarize
         print('Loading conversation...')
         conversation, recalled = load_conversation(results, prompt_id)
         notes = summarize_memories(recalled)
@@ -498,5 +278,5 @@ if __name__ == '__main__':
         
         # recent_messages = get_recent_messages(5)
         # determine_process(recent_messages, notes)
-        print('\n\nRAVEN: %s' % response) 
+        print('\n\nRAVEN: %s' % response)
         breakpoint('end of main loop')
