@@ -25,8 +25,11 @@ class MemoryManager:
         self.__max_tokens = self.__config['open_ai']['max_token_input']
         self.__episodic_memory_caches = [] # index will represent memory depth, useful for dynamic memory expansion
         self.__max_episodic_depth = 2 # will restrict memory expansion. 0 is unlimited depth.
-
+        
         openai.api_key = self.open_file(self.__config['open_ai']['api_key'])
+        pinecone.init(api_key=self.open_file(self.__config['pinecone']['api_key']), environment=self.__config['pinecone']['environment'])
+
+        self.__vector_db = pinecone.Index(self.__config['pinecone']['index'])
 
         ## When initialized, attempt to load cached state, otherwise make a new state
         if not (self.load_state()):
@@ -87,8 +90,8 @@ class MemoryManager:
                 "depth":self.__depth,
                 "token_buffer":self.__token_buffer,
                 "max_tokens":self.__max_tokens,
-                "memories":self.__memories,
                 "token_count":self.__token_count,
+                "memories":self.__memories,
                 "timestamp": timestamp,
                 "timestring": timestring
             }
@@ -147,9 +150,9 @@ class MemoryManager:
         for i in range(self.__max_episodic_depth+1):
             ## Initialize all episodic memory caches
             self.__episodic_memory_caches.append(self.MemoryCache(i, self.__token_buffer, self.__max_tokens))
-        self.cache_state()
+        self.save_state()
 
-    def cache_state(self):
+    def save_state(self):
         ## TODO: Restrict backups to max_backup_states
         timestamp = time()
         timestring = self.timestamp_to_datetime(timestamp)
@@ -278,7 +281,8 @@ class MemoryManager:
             self.compress_memory_cache(depth)
             self.__episodic_memory_caches[int(depth)].flush_memory_cache()
         print('Saving state...')
-        self.cache_state()
+        self.index_memory(memory)
+        self.save_state()
 
     def compress_memory_cache(self, depth):
         print('Compressing cache of depth (%s)...' % str(depth))
@@ -346,9 +350,78 @@ class MemoryManager:
         result = re.sub('[\t ]+', ' ', result)
         return result
 
+    ## Save memory locally, update local child memories, and save memory vector to pinecone
+    def index_memory(self, memory):
+        depth = int(memory['depth'])
+        memory_id = memory['id']
+        print('indexing memory (%s)' % memory_id)
+
+        self.save_memory_locally(memory)
+        self.parent_local_child_memories(memory)
+        vector = self.gpt3_embedding(str(memory['original_summary']))
+        ## The metadata and namespace are redundant but I need the data split for later
+        metadata = {'memory_type': 'episodic', 'depth': str(depth)}
+        namespace = self.__config['memory_management']['memory_namespace_template'] % depth
+        self.save_vector(vector, memory_id, metadata, namespace)
+
+        ## Cache the id to delete for testing.
+        mem_wipe = self.open('mem_wipe.txt','a')
+        mem_wipe.write('%s\n' % str(unique_id))
+        mem_wipe.close()
+
+    ## Stash the memory in the appropriate folder locally
+    def save_memory_locally(self, memory):
+        print('saving memory locally...')
+        depth = int(memory['depth'])
+        memory_id = memory['id']
+        ## Get the folder for this memory depth, make it if missing
+        memory_stash_folder = (self.__config['memory_management']['stash_folder_template'] % int(depth))
+        memory_dir = '%s/%s' % (self.__config['memory_management']['memory_stash_dir'], memory_stash_folder)
+
+        if not os.path.exists(memory_dir):
+            os.makedirs(memory_dir)
+        memory_path = '%s/%s.json' % (memory_dir, memory_id)
+        self.save_json(memory_path, memory)
+
+    ## Update all lower-depth memories with higher-depth memory id
+    def parent_local_child_memories(self, memory):
+        print('Parenting child memories...')
+        depth = int(memory['depth'])
+        memory_id = memory['id']
+        if "lower_memory_ids" in memory:
+            child_ids = list(memory['lower_memory_ids'])
+            child_memory_dir = (self.__config['memory_management']['stash_folder_template'] % int(depth)-1)
+            if os.path.exists(child_memory_dir):
+                for id in child_ids:
+                    child_path = '%s/%s.json' % (child_memory_dir,id)
+                    if os.path.isfile(child_path):
+                        content = load_json(child_path)
+                        content['episodic_parent_id'] = memory_id
+                        self.save_json(child_path, content)
+
     ## Debug functions
     def breakpoint(self, message = '\n\nEnter to continue...'):
         input(message+'\n')
+
+######################################################
+## Pinecone stuff... might move later...
+#### Query pinecone with vector. If search_all = True then name_space will be ignored.
+    def query_pinecone(self, vector, return_n, namespace = "", search_all = False):
+        if search_all:
+            results = vdb.query(vector=vector, top_k=return_n)
+        else:
+            results = vdb.query(vector=vector, top_k=return_n, namespace=namespace)
+
+    #### Save vector to pinecone
+    def save_vector(self, vector, unique_id, metadata, namespace=""):
+        payload_content = {'id': unique_id, 'values': vector, 'metadata': metadata}
+        payload = list()
+        payload.append(payload_content)
+        vdb.upsert(payload, namespace=namespace)
+
+    def update_vector(self, vector, unique_id, metadata, namespace=""):
+        ## TODO: figure out how to update existing vectors.
+        return unique_id
 
 ######################################################
 ## Open AI stuff... might move later...
@@ -419,12 +492,7 @@ class MemoryManager:
     #     ## Don't update if the episodic_id has data. Throw error or something.
     #     return ""
 
-    # def index_memory(self, memory_path, memory_type, memory, unique_id, vector):
-    #     save_json('%s/%s.json' % (memory_path,unique_id), memory)
-    #     ## TODO:
-    #     metadata = {'memory_type': memory_type}
-    #     save_vector(vector, unique_id, metadata, memory_type)
-    #     return unique_id
+
 
     # ## Save prompt as a json file in the prompt directory
     # def save_prompt(self, prefix, content, directory = config['raven']['prompt_dir'], filetime = time()):
