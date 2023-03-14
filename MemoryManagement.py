@@ -66,9 +66,16 @@ class MemoryManager:
         @property
         def memory_count(self):
             return len(self.__memories)
+
         @property
         def token_count(self):
             return self.__token_count
+
+        ## Return a list of all ids in memories tracked by the memory cache
+        @property
+        def memory_ids(self):
+            ids = list(map(lambda m: m['id'], self.__memories))
+            return ids
 
         ## Set all class attributes from the cache JSON
         def import_cache(self, cache):
@@ -117,9 +124,13 @@ class MemoryManager:
             self.__token_count = 0
             self.__id = str(uuid4())
 
-    @property
-    def episodic_memory_caches(self):
-        print(self.__episodic_memory_caches)
+    # @property
+    # def episodic_memory_caches(self):
+    #     return print(self.__episodic_memory_caches)
+
+    ## Return the list of memories currentl in cache
+    def get_memories_from_cache(self, depth):
+        return self.__episodic_memory_caches[int(depth)].memories
 
     ## Load JSON object representing state. State is all memory caches not yet summarized, active tasks, and active context.
     def load_state(self):
@@ -193,8 +204,8 @@ class MemoryManager:
         with open(filepath, 'w', encoding='utf-8') as outfile:
             json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
 
-    def stash_eidetic_memory(self, speaker, content, timestamp = time()):
-        eidetic_memory, unique_id = generate_eidetic_memory(speaker, content, timestamp)
+    # def stash_eidetic_memory(self, speaker, content, timestamp = time()):
+    #     eidetic_memory, unique_id = generate_eidetic_memory(speaker, content, timestamp)
         ## Load to pinecone
 
     ## Assemble and index eidetic memories from a message by a speaker
@@ -226,10 +237,8 @@ class MemoryManager:
             "keywords": keywords,
             "depth":int(depth)
         }
-
-        self.add_memmory(eidetic_memory, tokens, int(depth))
-        
-        return eidetic_memory, unique_id
+        episodic_memory, episodic_tokens = self.add_memmory(eidetic_memory, tokens, int(depth))
+        return eidetic_memory, tokens, episodic_memory, episodic_tokens
 
     ## Assemble an eposodic memory from a collection of eidetic or lower-depth episodic memories.
     def generate_episodic_memory(self, memories, depth, timestamp = time()):
@@ -266,30 +275,45 @@ class MemoryManager:
             "keywords": keywords,
             "depth": int(depth)
         }
-
-        self.add_memmory(episodic_memory, tokens, int(depth))
-
-        return episodic_memory, unique_id
+        # memory_compression = self.add_memmory(episodic_memory, tokens, int(depth))
+        return episodic_memory, tokens
 
     def add_memmory(self, memory, tokens, depth):
+        episodic_memory = None
+        episodic_tokens = 0
+        memory_compression = False
         print('adding memory to cache (%s)' % str(depth))
         if self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
             print('There is enough space in the cache...')
             self.__episodic_memory_caches[int(depth)].add_memory(memory, tokens)
+            ## There wasnt a memory compression so return False
+            memory_compression = False
         else:
-            print('There is not enough space in the cache, compressing...')
-            self.compress_memory_cache(depth)
+            print('There is not enough space in the cache, compressing...')    
+            episodic_memory, episodic_tokens = self.compress_memory_cache(depth)
             self.__episodic_memory_caches[int(depth)].flush_memory_cache()
+            # if not self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
+            #     ## TODO: There is an error because the next message is exceptionally long.
+            # Add the new message to the recently flushed memory cache
+            self.__episodic_memory_caches[int(depth)].add_memory(memory, tokens)
+            ## There was a memory compression so return True
+            memory_compression = True
         print('Saving state...')
         self.index_memory(memory)
         self.save_state()
+        return tokens, episodic_memory, episodic_tokens
 
+    ## Summarize all active memories and return the new memory id
+    ## TODO: This process could cascade several memory caches, but only depth 1 caches will be returned.
+    ## Need to account for this by passing a list down the line, then let the conversation manager
+    ## decide how to utilize the returned memories. will figure that out when I am less drunk.
     def compress_memory_cache(self, depth):
         print('Compressing cache of depth (%s)...' % str(depth))
         memories = self.__episodic_memory_caches[int(depth)].memories
         print('Pushing compressed memory to cache of depth (%s)...' % str(int(depth)+1))
-        self.generate_episodic_memory(memories, int(depth)+1)
+        episodic_memory, episodic_tokens = self.generate_episodic_memory(memories, int(depth)+1)
         print('Flushing cache of depth (%s)...' % str(depth))
+        return episodic_memory, episodic_tokens
 
     ## Format eidetic memory with a speaker and timestamp for context
     def format_eidetic_memory(self, memory):
@@ -335,6 +359,7 @@ class MemoryManager:
             role = 'system'
             return {"role":role,"name":name,"content": content}
 
+    ## Take in memory-management analysis and turn it into a string
     def flatten_gpt_memory_response(self, response_obj):
         result = ''
         response_type = type(response_obj['response'])
@@ -363,11 +388,11 @@ class MemoryManager:
         metadata = {'memory_type': 'episodic', 'depth': str(depth)}
         namespace = self.__config['memory_management']['memory_namespace_template'] % depth
         self.save_vector(vector, memory_id, metadata, namespace)
-
-        ## Cache the id to delete for testing.
-        mem_wipe = self.open('mem_wipe.txt','a')
-        mem_wipe.write('%s\n' % str(unique_id))
-        mem_wipe.close()
+        
+        # ## Cache the id to delete for testing.
+        # mem_wipe = self.open('mem_wipe.txt','a')
+        # mem_wipe.write('%s\n' % str(unique_id))
+        # mem_wipe.close()
 
     ## Stash the memory in the appropriate folder locally
     def save_memory_locally(self, memory):
@@ -414,13 +439,15 @@ class MemoryManager:
 
     #### Save vector to pinecone
     def save_vector(self, vector, unique_id, metadata, namespace=""):
-        payload_content = {'id': unique_id, 'values': vector, 'metadata': metadata}
-        payload = list()
-        payload.append(payload_content)
-        vdb.upsert(payload, namespace=namespace)
+        print('not saving vectors just yet... that will come later')
+        # payload_content = {'id': unique_id, 'values': vector, 'metadata': metadata}
+        # payload = list()
+        # payload.append(payload_content)
+        # vdb.upsert(payload, namespace=namespace)
 
     def update_vector(self, vector, unique_id, metadata, namespace=""):
         ## TODO: figure out how to update existing vectors.
+        ## This will be used when memories are retconned.
         return unique_id
 
 ######################################################
@@ -453,12 +480,12 @@ class MemoryManager:
                     presence_penalty=pres_pen,
                     stop=stop)
 
-                self.print_response_stats(response)
+                # self.print_response_stats(response)
                 response_id = str(response['id'])
                 prompt_tokens = int(response['usage']['prompt_tokens'])
                 completion_tokens = int(response['usage']['completion_tokens'])
                 total_tokens = int(response['usage']['total_tokens'])
-                print(response['choices'][0]['message']['content'].strip())
+                # print(response['choices'][0]['message']['content'].strip())
                 response_obj = json.loads(response['choices'][0]['message']['content'].strip())
                 return response_obj, total_tokens
             except Exception as oops:
