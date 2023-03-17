@@ -11,12 +11,11 @@ import datetime
 import pinecone
 import math
 import glob
-from MemoryManagement import MemoryManager
-from raven_open_ai import *
+from ConversationManagement import ConversationManager
 
 config = configparser.ConfigParser()
 config.read('config.ini')
-memory_manager = MemoryManager()
+conversation_manager = ConversationManager()
 
 def timestamp_to_datetime(unix_time):
     return datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M%p %Z")
@@ -228,8 +227,8 @@ if __name__ == '__main__':
     while True:
         ## Do things
         user_input = input('USER: ')
-        user_message, tokens = memory_manager.generate_eidetic_memory('USER', user_input)
-        active_tokens += int(tokens)
-        messages.append(user_message)
-        output = gpt3_completion(prompt)
-        post_message
+        conversation_manager.log_message('USER', user_input)
+        raven_response = conversation_manager.generate_response()
+        print('RAVEN: %s' % raven_response)
+        conversation_manager.log_message('RAVEN', raven_response)
+        breakpoint('\n\n........')

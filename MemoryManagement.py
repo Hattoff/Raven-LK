@@ -109,8 +109,6 @@ class MemoryManager:
         def add_memory(self, memory, number_of_tokens):
             self.__token_count += int(number_of_tokens)
             self.__memories.append(memory)
-            ## If no more memory space return True, this will trigger a memory compression
-            return not (self.has_memory_space(0))
 
         ## Before adding a memory, check to see if there will be space with next memory.
         def has_memory_space(self, next_number_of_tokens):
@@ -216,7 +214,27 @@ class MemoryManager:
         timestring = self.timestamp_to_datetime(timestamp)
         depth = 0
 
-        keywords = (self.generate_memory_element('keywords', content, depth))['response']
+        keywords_str = (self.generate_memory_element('keywords', content, depth))
+        keywords_obj = {}
+        try:
+            keywords_obj = json.loads(keywords_str)
+        except Exception as err:
+            print('ERROR: unable to parse the json object when creating eidetic memory keyword element')
+            print('Value from GPT:\n\n%s' % keywords_str)
+            self.breakpoint('\n\npausing...')
+
+        if 'response' not in keywords_obj:
+            print('ERROR: response key was not in eidetic memory keyword element')
+            print('Value from GPT:\n\n')
+            print(keywords_obj)
+            self.breakpoint('\n\npausing...')
+        
+        print(keywords_obj)
+        self.breakpoint('\n\nabove is the keyword object...')
+
+
+        # keywords = (self.generate_memory_element('keywords', content, depth))['response']
+        keywords = keywords_obj['response']
         summary = '%s: %s - %s' % (speaker, timestring, content)
         tokens = self.get_token_estimate(summary)
 
@@ -237,8 +255,7 @@ class MemoryManager:
             "keywords": keywords,
             "depth":int(depth)
         }
-        episodic_memory, episodic_tokens = self.add_memmory(eidetic_memory, tokens, int(depth))
-        return eidetic_memory, tokens, episodic_memory, episodic_tokens
+        return eidetic_memory, tokens
 
     ## Assemble an eposodic memory from a collection of eidetic or lower-depth episodic memories.
     def generate_episodic_memory(self, memories, depth, timestamp = time()):
@@ -254,8 +271,42 @@ class MemoryManager:
             memory_ids.append(str(memory['id']))
         content = "\n".join(result_list)
 
-        keywords = (self.generate_memory_element('keywords', content, depth))['response']
-        summary_obj = self.generate_memory_element('summary', content, depth)
+        keywords_str = (self.generate_memory_element('keywords', content, depth))
+        keywords_obj = {}
+        try:
+            keywords_obj = json.loads(keywords_str)
+        except Exception as err:
+            print('ERROR: unable to parse the json object when creating episodic memory keyword element')
+            print('Value from GPT:\n\n%s' % keywords_str)
+            self.breakpoint('\n\npausing...')
+
+        if 'response' not in keywords_obj:
+            print('ERROR: response key was not in episodic memory keyword element')
+            print('Value from GPT:\n\n')
+            print(keywords_obj)
+            self.breakpoint('\n\npausing...')
+        
+        print(keywords_obj)
+        self.breakpoint('\n\nabove is the keyword object...')
+
+        summary_str = self.generate_memory_element('summary', content, depth)
+        summary_obj = {}
+        try:
+            summary_obj = json.loads(summary_str)
+        except Exception as err:
+            print('ERROR: unable to parse the json object when creating episodic memory summary element')
+            print('Value from GPT:\n\n%s' % summary_str)
+            self.breakpoint('\n\npausing...')
+
+        if 'response' not in summary_obj:
+            print('ERROR: response key was not in episodic memory summary element')
+            print('Value from GPT:\n\n')
+            print(summary_obj)
+            self.breakpoint('\n\npausing...')
+
+        print(summary_obj)
+        self.breakpoint('\n\nabove is the summary object...')
+
         summary = self.flatten_gpt_memory_response(summary_obj)
         tokens = self.get_token_estimate(summary)
 
@@ -275,33 +326,46 @@ class MemoryManager:
             "keywords": keywords,
             "depth": int(depth)
         }
-        # memory_compression = self.add_memmory(episodic_memory, tokens, int(depth))
         return episodic_memory, tokens
 
-    def add_memmory(self, memory, tokens, depth):
-        episodic_memory = None
-        episodic_tokens = 0
-        memory_compression = False
+    def cache_memory(self, memory, tokens, depth):
         print('adding memory to cache (%s)' % str(depth))
         if self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
             print('There is enough space in the cache...')
             self.__episodic_memory_caches[int(depth)].add_memory(memory, tokens)
-            ## There wasnt a memory compression so return False
-            memory_compression = False
         else:
-            print('There is not enough space in the cache, compressing...')    
-            episodic_memory, episodic_tokens = self.compress_memory_cache(depth)
+            print('There is not enough space in the cache (%s), compressing...' % str(depth))    
+            self.compress_memory_cache(depth)
             self.__episodic_memory_caches[int(depth)].flush_memory_cache()
             # if not self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
             #     ## TODO: There is an error because the next message is exceptionally long.
             # Add the new message to the recently flushed memory cache
             self.__episodic_memory_caches[int(depth)].add_memory(memory, tokens)
-            ## There was a memory compression so return True
-            memory_compression = True
         print('Saving state...')
         self.index_memory(memory)
         self.save_state()
-        return tokens, episodic_memory, episodic_tokens
+
+    def create_new_memory(self, speaker, content):
+        episodic_memory = None
+        episodic_tokens = 0
+        depth = 0
+        memory, tokens = self.generate_eidetic_memory(speaker, content)
+        print('adding memory to cache (%s)' % str(depth))
+        if self.__episodic_memory_caches[depth].has_memory_space(tokens):
+            print('There is enough space in the cache...')
+            self.__episodic_memory_caches[depth].add_memory(memory, tokens)
+        else:
+            print('There is not enough space in the cache, compressing...')    
+            episodic_memory, episodic_tokens = self.compress_memory_cache(depth)
+            self.__episodic_memory_caches[depth].flush_memory_cache()
+            # if not self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
+            #     ## TODO: There is an error because the next message is exceptionally long.
+            # Add the new message to the recently flushed memory cache
+            self.__episodic_memory_caches[depth].add_memory(memory, tokens)
+        print('Saving state...')
+        self.index_memory(memory)
+        self.save_state()
+        return memory, tokens, episodic_memory, episodic_tokens
 
     ## Summarize all active memories and return the new memory id
     ## TODO: This process could cascade several memory caches, but only depth 1 caches will be returned.
@@ -312,6 +376,7 @@ class MemoryManager:
         memories = self.__episodic_memory_caches[int(depth)].memories
         print('Pushing compressed memory to cache of depth (%s)...' % str(int(depth)+1))
         episodic_memory, episodic_tokens = self.generate_episodic_memory(memories, int(depth)+1)
+        self.cache_memory(episodic_memory, episodic_tokens, int(depth)+1)
         print('Flushing cache of depth (%s)...' % str(depth))
         return episodic_memory, episodic_tokens
 
@@ -343,8 +408,10 @@ class MemoryManager:
         messages = list()
         temperature = float(prompt_obj[element_type]['temperature'])
         response_tokens = int(prompt_obj[element_type]['response_tokens'])
-        messages.append(self.compose_gpt_message(prompt_obj[element_type]['system_message'],'system'))
-        messages.append(self.compose_gpt_message(content,'user'))
+        prompt_content = prompt_obj[element_type]['system_message'] + '\n' + content
+        messages.append(self.compose_gpt_message(prompt_content,'user'))
+        # messages.append(self.compose_gpt_message(prompt_obj[element_type]['system_message'],'system'))
+        # messages.append(self.compose_gpt_message(content,'user'))
         element_obj, total_tokens = self.gpt_completion(messages, temperature, response_tokens)
         return element_obj
 
@@ -485,13 +552,14 @@ class MemoryManager:
                 prompt_tokens = int(response['usage']['prompt_tokens'])
                 completion_tokens = int(response['usage']['completion_tokens'])
                 total_tokens = int(response['usage']['total_tokens'])
+                response_str = response['choices'][0]['message']['content'].strip()
                 # print(response['choices'][0]['message']['content'].strip())
-                response_obj = json.loads(response['choices'][0]['message']['content'].strip())
-                return response_obj, total_tokens
+                # response_obj = json.loads(response['choices'][0]['message']['content'].strip())
+                return response_str, total_tokens
             except Exception as oops:
                 retry += 1
                 if retry >= max_retry:
-                    return "GPT3.5 error: %s" % oops
+                    return "GPT3.5 error: %s" % oops, -1
                 print('Error communicating with OpenAI:', oops)
                 sleep(2)
 
