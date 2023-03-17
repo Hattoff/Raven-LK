@@ -229,6 +229,6 @@ if __name__ == '__main__':
         user_input = input('USER: ')
         conversation_manager.log_message('USER', user_input)
         raven_response = conversation_manager.generate_response()
-        print('RAVEN: %s' % raven_response)
+        print('\nRAVEN: %s\n' % raven_response)
         conversation_manager.log_message('RAVEN', raven_response)
         breakpoint('\n\n........')

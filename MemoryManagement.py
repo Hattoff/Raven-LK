@@ -25,6 +25,7 @@ class MemoryManager:
         self.__max_tokens = self.__config['open_ai']['max_token_input']
         self.__episodic_memory_caches = [] # index will represent memory depth, useful for dynamic memory expansion
         self.__max_episodic_depth = 2 # will restrict memory expansion. 0 is unlimited depth.
+        self.debug_messages_enabled = True
         
         openai.api_key = self.open_file(self.__config['open_ai']['api_key'])
         pinecone.init(api_key=self.open_file(self.__config['pinecone']['api_key']), environment=self.__config['pinecone']['environment'])
@@ -126,9 +127,19 @@ class MemoryManager:
     # def episodic_memory_caches(self):
     #     return print(self.__episodic_memory_caches)
 
-    ## Return the list of memories currentl in cache
+    ## Return the number of memories of a given cache
+    def get_cache_memory_count(self,depth):
+        if int(depth) > len(self.__episodic_memory_caches):
+            return -1
+        return self.__episodic_memory_caches[int(depth)].memory_count
+
+    ## Return the list of memories currently in cache
     def get_memories_from_cache(self, depth):
-        return self.__episodic_memory_caches[int(depth)].memories
+        return self.__episodic_memory_caches[int(depth)].memories.copy()
+
+    @property
+    def cache_count(self):
+        return len(self.__episodic_memory_caches)
 
     ## Load JSON object representing state. State is all memory caches not yet summarized, active tasks, and active context.
     def load_state(self):
@@ -138,10 +149,10 @@ class MemoryManager:
 
         # there were no state backups so make and implement a new one
         if len(list(files)) <= 0:
-            print("no state backups found...")
+            self.debug_message("no state backups found...")
             return False
 
-        print("state backups loaded...")
+        self.debug_message("state backups loaded...")
         state_path = list(files)[0].replace('\\','/')
         state = self.load_json(state_path)
 
@@ -181,7 +192,7 @@ class MemoryManager:
         filename = ('%s_memory_state_%s.json' %(str(timestamp),unique_id))
         filepath = ('%s/%s' % (self.__config['memory_management']['memory_state_dir'], filename))
         self.save_json(filepath, state)
-        print('State saved...')
+        self.debug_message('State saved...')
 
     def timestamp_to_datetime(self, unix_time):
         return (datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M:%S%p %Z")).strip()
@@ -209,7 +220,7 @@ class MemoryManager:
     ## Assemble and index eidetic memories from a message by a speaker
     ## Eidetic memory is the base form of all episodic memory
     def generate_eidetic_memory(self, speaker, content, timestamp = time()):
-        print('Generating eidetic memory...')
+        self.debug_message('Generating eidetic memory...')
         unique_id = str(uuid4())
         timestring = self.timestamp_to_datetime(timestamp)
         depth = 0
@@ -226,23 +237,23 @@ class MemoryManager:
         if 'response' not in keywords_obj:
             if 'keywords' in keywords_obj:
                 keywords_obj = {'response':keywords_obj['keywords']}
-                print('RESOLVED: response key was not in eidetic memory keyword element')
+                self.debug_message('RESOLVED: response key was not in eidetic memory keyword element')
             elif 'keyword' in keywords_obj:
                 keywords_obj = {'response':keywords_obj['keyword']}
-                print('RESOLVED: response key was not in eidetic memory keyword element')
+                self.debug_message('RESOLVED: response key was not in eidetic memory keyword element')
             else:
                 print('ERROR: response key was not in eidetic memory keyword element')
                 print('Value from GPT:\n\n')
                 print(keywords_obj)
                 self.breakpoint('\n\npausing...')
         
-        print(keywords_obj)
-        self.breakpoint('\n\nabove is the keyword object...')
+        self.debug_message(keywords_obj)
+        self.debug_message('above is the keyword object...')
 
 
         # keywords = (self.generate_memory_element('keywords', content, depth))['response']
         keywords = keywords_obj['response']
-        summary = '%s: %s - %s' % (speaker, timestring, content)
+        summary = '[%s] %s: %s' % (timestring, speaker, content)
         tokens = self.get_token_estimate(summary)
 
         eidetic_memory = {
@@ -266,17 +277,16 @@ class MemoryManager:
 
     ## Assemble an eposodic memory from a collection of eidetic or lower-depth episodic memories.
     def generate_episodic_memory(self, memories, depth, timestamp = time()):
-        print('Generating episodic memory of cache depth (%s)...' % str(depth))
+        self.debug_message('Generating episodic memory of cache depth (%s)...' % str(depth))
         unique_id = str(uuid4())
         timestring = self.timestamp_to_datetime(timestamp)
 
         ## Send collection of memories to be summarized, pass the unique id to set episodic_parent_id
         content = ''
-        memory_ids = ()
+        memory_ids = []
         for memory in memories:
             content += '%s\n' % memory['original_summary']
             memory_ids.append(str(memory['id']))
-        content = "\n".join(result_list)
 
         keywords_str = (self.generate_memory_element('keywords', content, depth))
         keywords_obj = {}
@@ -289,36 +299,37 @@ class MemoryManager:
         if 'response' not in keywords_obj:
             if 'keywords' in keywords_obj:
                 keywords_obj = {'response':keywords_obj['keywords']}
-                print('RESOLVED: response key was not in episodic memory keyword element')
+                self.debug_message('RESOLVED: response key was not in episodic memory keyword element')
             elif 'keyword' in keywords_obj:
                 keywords_obj = {'response':keywords_obj['keyword']}
-                print('RESOLVED: response key was not in episodic memory keyword element')
+                self.debug_message('RESOLVED: response key was not in episodic memory keyword element')
             else:
-                print('ERROR: response key was not in episodic memory keyword element')
+                print('ERROR: response or keyword(s) key was not in episodic memory keyword element')
                 print('Value from GPT:\n\n')
                 print(keywords_obj)
                 self.breakpoint('\n\npausing...')
         
-        print(keywords_obj)
-        self.breakpoint('\n\nabove is the keyword object...')
+        self.debug_message(keywords_obj)
+        self.debug_message('above is the keyword object...')
 
         summary_str = self.generate_memory_element('summary', content, depth)
         summary_obj = {}
         try:
             summary_obj = json.loads(summary_str)
         except Exception as err:
-            print('ERROR: unable to parse the json object when creating episodic memory summary element')
-            print('Value from GPT:\n\n%s' % summary_str)
-            self.breakpoint('\n\npausing...')
+            self.debug_message('RESOLVED: unable to parse the json object when creating episodic memory summary element')
+            self.debug_message('Value from GPT:\n\n%s' % summary_str)
+            summary_obj = {'summary':summary_str}
+            self.breakpoint('\npausing...')
 
         if 'response' not in summary_obj:
-            print('ERROR: response key was not in episodic memory summary element')
-            print('Value from GPT:\n\n')
-            print(summary_obj)
-            self.breakpoint('\n\npausing...')
+            self.debug_message('ERROR: response key was not in episodic memory summary element')
+            self.debug_message('Value from GPT:\n\n')
+            self.debug_message(summary_obj)
+            self.breakpoint('\npausing...')
 
-        print(summary_obj)
-        self.breakpoint('\n\nabove is the summary object...')
+        self.debug_message(summary_obj)
+        self.debug_message('above is the summary object...')
 
         summary = self.flatten_gpt_memory_response(summary_obj)
         tokens = self.get_token_estimate(summary)
@@ -342,19 +353,19 @@ class MemoryManager:
         return episodic_memory, tokens
 
     def cache_memory(self, memory, tokens, depth):
-        print('adding memory to cache (%s)' % str(depth))
+        self.debug_message('adding memory to cache (%s)' % str(depth))
         if self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
-            print('There is enough space in the cache...')
+            self.debug_message('There is enough space in the cache...')
             self.__episodic_memory_caches[int(depth)].add_memory(memory, tokens)
         else:
-            print('There is not enough space in the cache (%s), compressing...' % str(depth))    
+            self.debug_message('There is not enough space in the cache (%s), compressing...' % str(depth))    
             self.compress_memory_cache(depth)
             self.__episodic_memory_caches[int(depth)].flush_memory_cache()
             # if not self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
             #     ## TODO: There is an error because the next message is exceptionally long.
             # Add the new message to the recently flushed memory cache
             self.__episodic_memory_caches[int(depth)].add_memory(memory, tokens)
-        print('Saving state...')
+        self.debug_message('Saving state...')
         self.index_memory(memory)
         self.save_state()
 
@@ -363,19 +374,19 @@ class MemoryManager:
         episodic_tokens = 0
         depth = 0
         memory, tokens = self.generate_eidetic_memory(speaker, content)
-        print('adding memory to cache (%s)' % str(depth))
+        self.debug_message('adding memory to cache (%s)' % str(depth))
         if self.__episodic_memory_caches[depth].has_memory_space(tokens):
-            print('There is enough space in the cache...')
+            self.debug_message('There is enough space in the cache...')
             self.__episodic_memory_caches[depth].add_memory(memory, tokens)
         else:
-            print('There is not enough space in the cache, compressing...')    
+            self.debug_message('There is not enough space in the cache, compressing...')    
             episodic_memory, episodic_tokens = self.compress_memory_cache(depth)
             self.__episodic_memory_caches[depth].flush_memory_cache()
             # if not self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
             #     ## TODO: There is an error because the next message is exceptionally long.
             # Add the new message to the recently flushed memory cache
             self.__episodic_memory_caches[depth].add_memory(memory, tokens)
-        print('Saving state...')
+        self.debug_message('Saving state...')
         self.index_memory(memory)
         self.save_state()
         return memory, tokens, episodic_memory, episodic_tokens
@@ -385,12 +396,12 @@ class MemoryManager:
     ## Need to account for this by passing a list down the line, then let the conversation manager
     ## decide how to utilize the returned memories. will figure that out when I am less drunk.
     def compress_memory_cache(self, depth):
-        print('Compressing cache of depth (%s)...' % str(depth))
+        self.debug_message('Compressing cache of depth (%s)...' % str(depth))
         memories = self.__episodic_memory_caches[int(depth)].memories
-        print('Pushing compressed memory to cache of depth (%s)...' % str(int(depth)+1))
+        self.debug_message('Pushing compressed memory to cache of depth (%s)...' % str(int(depth)+1))
         episodic_memory, episodic_tokens = self.generate_episodic_memory(memories, int(depth)+1)
         self.cache_memory(episodic_memory, episodic_tokens, int(depth)+1)
-        print('Flushing cache of depth (%s)...' % str(depth))
+        self.debug_message('Flushing cache of depth (%s)...' % str(depth))
         return episodic_memory, episodic_tokens
 
     ## Format eidetic memory with a speaker and timestamp for context
@@ -443,7 +454,7 @@ class MemoryManager:
     def flatten_gpt_memory_response(self, response_obj):
         result = ''
         response_type = type(response_obj['response'])
-        print('this is the response type: %s' % response_type)
+        self.debug_message('this is the response type: %s' % response_type)
         if response_type == "str":
             result = response_obj['response']
         elif response_type == "list":
@@ -459,7 +470,7 @@ class MemoryManager:
     def index_memory(self, memory):
         depth = int(memory['depth'])
         memory_id = memory['id']
-        print('indexing memory (%s)' % memory_id)
+        self.debug_message('indexing memory (%s)' % memory_id)
 
         self.save_memory_locally(memory)
         self.parent_local_child_memories(memory)
@@ -467,16 +478,15 @@ class MemoryManager:
         ## The metadata and namespace are redundant but I need the data split for later
         metadata = {'memory_type': 'episodic', 'depth': str(depth)}
         namespace = self.__config['memory_management']['memory_namespace_template'] % depth
-        self.save_vector(vector, memory_id, metadata, namespace)
+        self.save_vector_to_pinecone(vector, memory_id, metadata, namespace)
         
-        # ## Cache the id to delete for testing.
-        # mem_wipe = self.open('mem_wipe.txt','a')
-        # mem_wipe.write('%s\n' % str(unique_id))
-        # mem_wipe.close()
+        ## Cache the id to delete for testing.
+        with open('mem_wipe.txt', 'a', encoding='utf-8') as mem_wipe:
+            mem_wipe.write('%s\n' % str(memory_id))
 
     ## Stash the memory in the appropriate folder locally
     def save_memory_locally(self, memory):
-        print('saving memory locally...')
+        self.debug_message('saving memory locally...')
         depth = int(memory['depth'])
         memory_id = memory['id']
         ## Get the folder for this memory depth, make it if missing
@@ -490,7 +500,7 @@ class MemoryManager:
 
     ## Update all lower-depth memories with higher-depth memory id
     def parent_local_child_memories(self, memory):
-        print('Parenting child memories...')
+        self.debug_message('Parenting child memories...')
         depth = int(memory['depth'])
         memory_id = memory['id']
         if "lower_memory_ids" in memory:
@@ -507,23 +517,28 @@ class MemoryManager:
     ## Debug functions
     def breakpoint(self, message = '\n\nEnter to continue...'):
         input(message+'\n')
+    
+    def debug_message(self, message):
+        if self.debug_messages_enabled:
+            print(message)
 
 ######################################################
 ## Pinecone stuff... might move later...
 #### Query pinecone with vector. If search_all = True then name_space will be ignored.
     def query_pinecone(self, vector, return_n, namespace = "", search_all = False):
         if search_all:
-            results = vdb.query(vector=vector, top_k=return_n)
+            results = self.__vector_db.query(vector=vector, top_k=return_n)
         else:
-            results = vdb.query(vector=vector, top_k=return_n, namespace=namespace)
+            results = self.__vector_db.query(vector=vector, top_k=return_n, namespace=namespace)
 
     #### Save vector to pinecone
-    def save_vector(self, vector, unique_id, metadata, namespace=""):
-        print('not saving vectors just yet... that will come later')
-        # payload_content = {'id': unique_id, 'values': vector, 'metadata': metadata}
-        # payload = list()
-        # payload.append(payload_content)
-        # vdb.upsert(payload, namespace=namespace)
+    def save_vector_to_pinecone(self, vector, unique_id, metadata, namespace=""):
+        # self.debug_message('not saving vectors just yet... that will come later')
+        self.debug_message('Saving vector to pinecone.')
+        payload_content = {'id': unique_id, 'values': vector, 'metadata': metadata}
+        payload = list()
+        payload.append(payload_content)
+        self.__vector_db.upsert(payload, namespace=namespace)
 
     def update_vector(self, vector, unique_id, metadata, namespace=""):
         ## TODO: figure out how to update existing vectors.

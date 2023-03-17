@@ -15,15 +15,15 @@ class ConversationManager:
     def __init__(self):
         self.__config = configparser.ConfigParser()
         self.__config.read('config.ini')
-
         self.__memory_manager = MemoryManager()
         self.__eidetic_memory_log = self.MemoryLog(1600,4)
         self.__episodic_memory_log = self.MemoryLog(1600,4)
         
         openai.api_key = self.open_file(self.__config['open_ai']['api_key'])
         pinecone.init(api_key=self.open_file(self.__config['pinecone']['api_key']), environment=self.__config['pinecone']['environment'])
-
         self.__vector_db = pinecone.Index(self.__config['pinecone']['index'])
+
+        self.load_state()
 
     class MemoryLog:
         def __init__(self, max_log_tokens, min_log_count):
@@ -79,6 +79,34 @@ class ConversationManager:
         def memory_count(self):
             return len(self.__memories)
 
+    ## Load recent conversation log and conversation notes
+    def load_state(self):
+        if self.__memory_manager.get_cache_memory_count(0) > 0:
+            eidetic_memories = self.__memory_manager.get_memories_from_cache(0)
+            for m in eidetic_memories:
+                self.__eidetic_memory_log.add(m, m['original_tokens'])
+                print('state loaded...')
+
+        cache_count = self.__memory_manager.cache_count
+        for d in list(reversed(range(cache_count)))[0:cache_count-1]:
+            if self.__memory_manager.get_cache_memory_count(d) > 0:
+                episodic_memories = self.__memory_manager.get_memories_from_cache(d)
+                for m in episodic_memories:
+                    self.__episodic_memory_log.add(m, m['original_tokens'])
+
+        self.reestablish_conversation_context()
+
+    def reestablish_conversation_context(self):
+        if self.__memory_manager.get_cache_memory_count(0) > 0:
+            eidetic_memories = self.__memory_manager.get_memories_from_cache(0)
+            eidetic_memories.reverse()
+            if len(eidetic_memories) >= 2:
+                for i in reversed(range(2)):
+                    print('\n' + eidetic_memories[0]['original_summary'] + '\n')
+                if eidetic_memories[0]['speaker'] == 'USER':
+                    self.generate_response()
+
+
     def log_message(self, speaker, content):
         eidetic_memory, eidetic_tokens, episodic_memory, episodic_tokens = self.__memory_manager.create_new_memory(speaker, content)
         self.__eidetic_memory_log.add(eidetic_memory, eidetic_tokens)
@@ -122,9 +150,6 @@ class ConversationManager:
         self.save_file(conversation_path, response)
 
         return response
-
-    # def load_conversation(self):
-
         
     def save_file(self, filepath, content):
         with open(filepath, 'w', encoding='utf-8') as outfile:
@@ -208,7 +233,3 @@ class ConversationManager:
         tokens = encoding.encode(content)
         token_count = len(tokens)
         return token_count
-
-
-
-### Based on the conversation below what is x,y,z 
