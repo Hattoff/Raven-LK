@@ -46,9 +46,10 @@ class ConversationManager:
             if self.__token_count > self.__max_log_tokens and memory_count > self.__min_log_count:
                 ## Rebuild the memory list with a minumum number of memories, but continue to add memories until token count is reached
                 memories = self.__memories.copy()
+                memories.reverse()
                 self.__memories.clear()
                 token_count = 0
-                for m in range(memory_count-1):
+                for m in memories:
                     ## Don't exit until the minimum number of memories have been added
                     if len(self.__memories) < self.__min_log_count:
                         token_count += int(m[1])
@@ -121,6 +122,9 @@ class ConversationManager:
         self.save_file(conversation_path, response)
 
         return response
+
+    # def load_conversation(self):
+
         
     def save_file(self, filepath, content):
         with open(filepath, 'w', encoding='utf-8') as outfile:

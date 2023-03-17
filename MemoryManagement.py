@@ -224,10 +224,17 @@ class MemoryManager:
             self.breakpoint('\n\npausing...')
 
         if 'response' not in keywords_obj:
-            print('ERROR: response key was not in eidetic memory keyword element')
-            print('Value from GPT:\n\n')
-            print(keywords_obj)
-            self.breakpoint('\n\npausing...')
+            if 'keywords' in keywords_obj:
+                keywords_obj = {'response':keywords_obj['keywords']}
+                print('RESOLVED: response key was not in eidetic memory keyword element')
+            elif 'keyword' in keywords_obj:
+                keywords_obj = {'response':keywords_obj['keyword']}
+                print('RESOLVED: response key was not in eidetic memory keyword element')
+            else:
+                print('ERROR: response key was not in eidetic memory keyword element')
+                print('Value from GPT:\n\n')
+                print(keywords_obj)
+                self.breakpoint('\n\npausing...')
         
         print(keywords_obj)
         self.breakpoint('\n\nabove is the keyword object...')
@@ -267,7 +274,7 @@ class MemoryManager:
         content = ''
         memory_ids = ()
         for memory in memories:
-            content += '%s\n' % memory['summary']
+            content += '%s\n' % memory['original_summary']
             memory_ids.append(str(memory['id']))
         content = "\n".join(result_list)
 
@@ -279,12 +286,18 @@ class MemoryManager:
             print('ERROR: unable to parse the json object when creating episodic memory keyword element')
             print('Value from GPT:\n\n%s' % keywords_str)
             self.breakpoint('\n\npausing...')
-
         if 'response' not in keywords_obj:
-            print('ERROR: response key was not in episodic memory keyword element')
-            print('Value from GPT:\n\n')
-            print(keywords_obj)
-            self.breakpoint('\n\npausing...')
+            if 'keywords' in keywords_obj:
+                keywords_obj = {'response':keywords_obj['keywords']}
+                print('RESOLVED: response key was not in episodic memory keyword element')
+            elif 'keyword' in keywords_obj:
+                keywords_obj = {'response':keywords_obj['keyword']}
+                print('RESOLVED: response key was not in episodic memory keyword element')
+            else:
+                print('ERROR: response key was not in episodic memory keyword element')
+                print('Value from GPT:\n\n')
+                print(keywords_obj)
+                self.breakpoint('\n\npausing...')
         
         print(keywords_obj)
         self.breakpoint('\n\nabove is the keyword object...')
