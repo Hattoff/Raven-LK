@@ -226,9 +226,10 @@ if __name__ == '__main__':
     messages = list()
     while True:
         ## Do things
+        print('\n')
         user_input = input('USER: ')
+        print('\n')
         conversation_manager.log_message('USER', user_input)
         raven_response = conversation_manager.generate_response()
         print('\nRAVEN: %s\n' % raven_response)
         conversation_manager.log_message('RAVEN', raven_response)
-        breakpoint('\n\n........')

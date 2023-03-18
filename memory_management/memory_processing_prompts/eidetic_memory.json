@@ -1,12 +1,12 @@
 {
     "keywords":{
-        "system_message":"I will review the message provided to me generate keywords so that all key elements are represented in as little comprehensible text possible. I will format my response like this:\r\n{\r\n\t\"response\":[]r\n}",
-        "temperature":0.7,
-        "response_tokens":256
+        "system_message":"I will review the message provided to me and generate keywords so that all key elements are represented in as little comprehensible text possible. I will format my response like this:{\"keywords\":[]}\n%s",
+        "temperature":0.0,
+        "response_tokens":400
     },
     "summary":{
-        "system_message":"I will review the message provided to me and summarize it so that all key elements are represented in as little comprehensible text possible. I will format my response like this:\r\n{\r\n\t\"response\":\"\"\r\n}",
-        "temperature":0.7,
-        "response_tokens":256
+        "system_message":"I will review the message provided to me and summarize it so that all key elements are represented in as little comprehensible text possible.\n%s",
+        "temperature":0.0,
+        "response_tokens":400
     }
 }

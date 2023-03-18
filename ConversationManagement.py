@@ -69,7 +69,11 @@ class ConversationManager:
                 self.__token_count = token_count
         
         def __generate_memory_string(self):
-            self.__memory_string = '\n'.join(m[0]['original_summary'] for m in self.__memories)
+            if len(self.__memories) > 0:
+                if 'content' in self.__memories[0][0]:
+                    self.__memory_string = '\n'.join('%s: %s' % (m[0]['speaker'],m[0]['content']) for m in self.__memories)
+                else:
+                    self.__memory_string = '\n'.join(m[0]['original_summary'] for m in self.__memories)
 
         @property
         def memory_string(self):
@@ -96,17 +100,62 @@ class ConversationManager:
 
         self.reestablish_conversation_context()
 
-    def reestablish_conversation_context(self):
+
+    ######## This is not working so don't run it...#######
+    ## My thoughts are this... on rare occasions there will be a rollup on all levels of
+    ## memory depth except the heighest depth. This means that, in order for you to get
+    ## the recent conversation context you will need to walk your way down the chain of memories
+    ## in the cache until you get to the most recent eidetic memories list so you can load it...
+    ########
+    ## Solutions include:
+    ##  1.) Every time the memory manager flushes memories, it keeps a cache of the flushed
+    ##      memories for reference, or at least the ids and reloads them at initialization. -- I like this one best
+    ##  2.) You attempt to figure out the insanity that is currently below this comment where I attempt to iterate
+    ##      down the chain of memories to find the eidetic memories most recently flushed... -- I hate this one the most
+    ## Note, wine didn't help this problem... I will come back to this tomorrow, but will commit in case I
+    ##      get another surprise update or something is lost...
+    ## Reload the most recent messages
+    def reestablish_conversation_context(self, reload_message_count = 2):
         if self.__memory_manager.get_cache_memory_count(0) > 0:
-            eidetic_memories = self.__memory_manager.get_memories_from_cache(0)
-            eidetic_memories.reverse()
-            if len(eidetic_memories) >= 2:
-                for i in reversed(range(2)):
-                    print('\n' + eidetic_memories[0]['original_summary'] + '\n')
-                if eidetic_memories[0]['speaker'] == 'USER':
-                    self.generate_response()
+            memory_cache_count = self.__memory_manager.cache_count
+            for c in range(memory_cache_count):
+                eidetic_memories = self.__memory_manager.get_memories_from_cache(c)
+                memory_count = len(eidetic_memories)
+                if memory_count > 0:
+                    reload_count = min(int(reload_message_count), memory_count)
+                    eidetic_memories.reverse()
+                    self.initalize_reloaded_context(eidetic_memories, memory_count)
+                    break
+                elif c < memory_cache_count-1:
+                    episodic_memories = self.__memory_manager.get_memories_from_cache(c+1)
+                    if len(episodic_memories) > 0:
+                        eidetic_memory_ids = episodic_memories[0]['lower_memory_ids']
+                        eidetic_memories = []
+                        depth = c+1
+                        memory_folder = self.__config['memory_management']['memory_namespace_template'] % str(depth)
+                        memory_file_path = '%s/%s' % (self.__config['memory_management']['memory_stash_dir'], memory_folder)
+                        for mem_id in idetic_memory_ids:
+                            try:
+                                memory_path = '%s/%s.json' % (memory_file_path, memory_folder, mem_id)
+                                memory = self.load_json(memory_path)
+                                eidetic_memories.append(memory)
+                            except Exception as err:
+                                print('ERROR: unable to load memory %s.json from %s' % (mem_id, memory_folder))
+                        memory_count = len(eidetic_memories)
+                        if memory_count > 0:
+                            reload_count = min(int(reload_message_count), memory_count)
+                            eidetic_memories = sorted(eidetic_memories, key=lambda x: x[''], reverse()
+                            self.initalize_reloaded_context(eidetic_memories, memory_count)
+                            break
 
-
+    def initalize_reloaded_context(self, eidetic_memories, reload_count):
+        ## Display the last two messages with dates and speaker stamps for context.
+        for i in reversed(range(reload_count)):
+            print('\n[%s] %s: %s\n' % (eidetic_memories[i]['original_timestring'],eidetic_memories[i]['speaker'],eidetic_memories[i]['content']))
+        ## If the last speaker was the user, prompt Raven to respond to their last message
+        if eidetic_memories[0]['speaker'] == 'USER':
+                self.generate_response()
+            
     def log_message(self, speaker, content):
         eidetic_memory, eidetic_tokens, episodic_memory, episodic_tokens = self.__memory_manager.create_new_memory(speaker, content)
         self.__eidetic_memory_log.add(eidetic_memory, eidetic_tokens)
@@ -203,12 +252,10 @@ class ConversationManager:
                     presence_penalty=pres_pen,
                     stop=stop)
 
-                # self.print_response_stats(response)
                 response_id = str(response['id'])
                 prompt_tokens = int(response['usage']['prompt_tokens'])
                 completion_tokens = int(response['usage']['completion_tokens'])
                 total_tokens = int(response['usage']['total_tokens'])
-                # print(response['choices'][0]['message']['content'].strip())
                 response_text = response['choices'][0]['message']['content'].strip()
                 response_text = re.sub('[\r\n]+', '\n', response_text)
                 response_text = re.sub('[\t ]+', ' ', response_text)

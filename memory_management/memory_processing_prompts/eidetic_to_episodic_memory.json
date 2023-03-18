@@ -1,16 +1,12 @@
 {
     "keywords":{
-        "system_message":"I will review the message provided to me generate keywords so that all key elements are represented in as little comprehensible text possible. I will format my response like this:\r\n{\r\n\t\"keywords\":[]r\n}",
-        "temperature":0.7,
-        "response_tokens":256,
-        "expected_return_type":"list",
-        "expected_return_name":"keywords"
+        "system_message":"I will review the message provided to me and generate keywords so that all key elements are represented in as little comprehensible text possible. I will format my response like this:{\"keywords\":[]}\n%s",
+        "temperature":0.0,
+        "response_tokens":500
     },
     "summary":{
-        "system_message":"I will write detailed notes of the following conversation. I will format my response like:\r\n{\r\n\t\"notes\":[]\r\n}",
-        "temperature":0.7,
-        "response_tokens":256,
-        "expected_return_type":"list",
-        "expected_return_name":"notes"
+        "system_message":"I will read the following conversation between USER and RAVEN below and then follow the directions in the INSTRUCTIONS section.\n%s\nINSTRUCTIONS:I will summarize the conversation so that all key elements are represented in as little comprehensible text possible.",
+        "temperature":0.0,
+        "response_tokens":500
     }
 }

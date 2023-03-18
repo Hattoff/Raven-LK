@@ -18,12 +18,13 @@ index = pinecone.Index(config['pinecone']['index'])
 
 
 # Fetch all IDs in the given namespace
-def fetch_ids(pinecone_namespace = 'episodic_depth_0', top_k = 7):
+def fetch_ids(depth = 0, top_k = 7):
+    pinecone_namespace = 'episodic_depth_%s' % str(depth)
     vector = [random.random() for _ in range (1536)]
     response = index.query(vector=vector, top_k=top_k, include_values=False, namespace=pinecone_namespace)
     ids = ','.join(t['id'] for t in response['matches'])
     print(ids)
-    return response
+    return ids
 
 if __name__ == '__main__':
     fetch_ids()
