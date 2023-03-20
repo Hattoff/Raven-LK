@@ -128,7 +128,7 @@ class MemoryManager:
         def flush_memory_cache(self):
             ## Cache the current caches memory ids and their timestamps for loading purposes
             self.__previous_memory_ids.clear()
-            self.__previous_memory_ids = list(map(lambda m : m['id']),self.__memories)
+            self.__previous_memory_ids = list(map(lambda m : m['id'],self.__memories))
             ## Clear memory cache and reset token count
             self.__memories.clear()
             self.__token_count = 0
@@ -234,10 +234,10 @@ class MemoryManager:
         depth = 0
 
         ## Execute sub-prompts to get metadata and summaries of the memories
-        eidetic_keywords_response = self.generate_memory_element('keywords', '%s: %s' % (speaker, content), depth)
+        eidetic_keywords_response = self.generate_memory_element('keywords', '%s: %s' % (speaker, content), depth, speaker)
         eidetic_keywords = self.cleanup_keywords_memory_response(eidetic_keywords_response)
 
-        eidetic_summary_result = self.generate_memory_element('summary', '%s: %s' % (speaker, content), depth)
+        eidetic_summary_result = self.generate_memory_element('summary', '%s: %s' % (speaker, content), depth, speaker)
         eidetic_summary = self.cleanup_summary_memory_response(eidetic_summary_result)
         eidetic_tokens = self.get_token_estimate(eidetic_summary)
 
@@ -413,7 +413,8 @@ class MemoryManager:
         return message
 
     ## Generate a summary, keyword, or other element for a eidetic messages or episodic summaries
-    def generate_memory_element(self, element_type, content, depth, content_tokens=10):
+    ## speaker parameter is only used by eidetic memory generation at depth = 0
+    def generate_memory_element(self, element_type, content, depth, speaker = '', content_tokens=10):
         ## Choose which memory processing prompt to use
         if int(depth) == 0:
             prompt_name = 'eidetic_memory'
@@ -433,7 +434,10 @@ class MemoryManager:
 
         ## Generate memory element
         messages = list()
-        prompt_content = prompt_obj[element_type]['system_message'] % content
+        if int(depth) == 0:
+            prompt_content = prompt_obj[element_type]['system_message'] % (speaker, content)
+        else:
+            prompt_content = prompt_obj[element_type]['system_message'] % content
         messages.append(self.compose_gpt_message(prompt_content,'user'))
         memory_element, total_tokens = self.gpt_completion(messages, temperature, response_tokens)
         return memory_element

@@ -16,8 +16,8 @@ class ConversationManager:
         self.__config = configparser.ConfigParser()
         self.__config.read('config.ini')
         self.__memory_manager = MemoryManager()
-        self.__eidetic_memory_log = self.MemoryLog(1600,4)
-        self.__episodic_memory_log = self.MemoryLog(1600,4)
+        self.__eidetic_memory_log = self.MemoryLog(1000,4)
+        self.__episodic_memory_log = self.MemoryLog(1000,4)
         
         openai.api_key = self.open_file(self.__config['open_ai']['api_key'])
         pinecone.init(api_key=self.open_file(self.__config['pinecone']['api_key']), environment=self.__config['pinecone']['environment'])
