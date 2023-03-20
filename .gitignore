@@ -11,3 +11,5 @@ wiki_metadata/*
 __pycache__/
 memory_management/memory_states/*
 memory_management/memory_stash/*
+conversation_management/conversation_stash/*
+conversation_management/prompt_stash/*

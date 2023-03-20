@@ -11,12 +11,11 @@ import datetime
 import pinecone
 import math
 import glob
-from raven_memory_management import MemoryManager
-from raven_open_ai import *
+from ConversationManagement import ConversationManager
 
 config = configparser.ConfigParser()
 config.read('config.ini')
-memory_manager = MemoryManager()
+conversation_manager = ConversationManager()
 
 def timestamp_to_datetime(unix_time):
     return datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M%p %Z")
@@ -182,69 +181,55 @@ def subprocess_input(memories, notes, most_recent_message):
         
         memory_search = intent_keywords + '\n' + intent_reason
     # elif (intent_intent.lower() == 'query' or intent_intent.lower() == 'create' or intent_intent.lower() == 'modify') and intent_speaker.lower() == 'user':
-        ## TODO: Have raven search wiki and determine if the file exists
+        ## TODO: Have raven search wiki and determine if the file exist
 
-def summarize_wiki_page(filename):
-    wiki_page_content = open_file('%s/%s.txt' % (config['wiki']['wiki_pages'],filename))
-    prompt = open_file('prompt_summarize_wiki_page.txt').replace('<<CONTENT>>', wiki_page_content)
-    save_prompt('wiki_page_summary_prompt_',prompt)
+def prompt_gpt_completion(self, messages, temp=0.0, tokens=400, stop=['USER:', 'RAVEN:']):
+        engine = self.__config['open_ai']['model']
+        top_p=1.0
+        freq_pen=0.0
+        pres_pen=0.0
 
-    results = gpt_completion(prompt)
-    save_prompt('wiki_page_summary_prompt_results_',results)
+        max_retry = 5
+        retry = 0
+        while True:
+            try:
+                response = openai.ChatCompletion.create(
+                    model=engine,
+                    messages=messages,
+                    temperature=temp,
+                    max_tokens=tokens,
+                    top_p=top_p,
+                    frequency_penalty=freq_pen,
+                    presence_penalty=pres_pen,
+                    stop=stop)
 
-    return results
+                # self.print_response_stats(response)
+                response_id = str(response['id'])
+                prompt_tokens = int(response['usage']['prompt_tokens'])
+                completion_tokens = int(response['usage']['completion_tokens'])
+                total_tokens = int(response['usage']['total_tokens'])
+                response_obj = json.loads(response['choices'][0]['message']['content'].strip())
+                return response_obj, total_tokens
+            except Exception as oops:
+                retry += 1
+                if retry >= max_retry:
+                    return "GPT3.5 error: %s" % oops
+                print('Error communicating with OpenAI:', oops)
+                sleep(2)
 
-
-def load_conversation(pinecone_results, current_prompt_id = ''):
-    recalled = list()
-    if current_prompt_id != '':
-        info = load_json('nexus/%s.json' % current_prompt_id)
-        recalled.append(info)
-
-    for m in pinecone_results['matches']:
-        info = load_json('nexus/%s.json' % m['id'])
-        recalled.append(info)
-    ordered = sorted(recalled, key=lambda d: d['time'], reverse=False)  # sort them all chronologically
-    messages = [i['message'] for i in ordered]
-    return '\n'.join(messages).strip(), recalled
-    
-def vectorize_wiki_page(filename):
-    breakpoint('loading wiki page...')
-    vdb = pinecone.Index(config['pinecone']['index'])
-    page_content = open_file('%s/%s.txt' % (config['wiki']['wiki_pages'],filename))
-    vector = gpt3_embedding(page_content)
-
-    timestamp = time()
-    unique_id=str(uuid4())
-    print(unique_id)
-    timestring = timestamp_to_datetime(timestamp)
-    breakpoint('saving local metadata...')
-    local_metadata = {'filename': filename, 'element_type': 'location', 'time': timestamp, 'timestring': timestring, 'uuid': unique_id}
-    save_json('%s/%s.json' % (config['wiki']['wiki_metadata'],unique_id), local_metadata)
-
-    breakpoint('saving pinecone vector...')
-    pinecone_metadata = {'filename': filename, 'element_type': 'location'}
-    pinecone_payload = {'id': unique_id, 'values': vector, 'metadata': pinecone_metadata}
-    payload = list()
-    payload.append(pinecone_payload)
-    vdb.upsert(payload, namespace='wiki_pages')
-
-## The role can be either system or user. If the role is system then you are either giving the model instructions/personas or example prompts.
-## Then name field is used for example prompts which guide the model on how to respond.
-## If the name field has data, the model will not consider them part of the conversation; the role will be system by default.
-def compose_gpt_message(content,role,name=''):
-    if name == '':
-        return {"role":role, "content": content}
-    else:
-        role = 'system'
-        return {"role":role,"name":name,"content": content}
-
+def post_conversation(messages):
+    output = prompt_gpt3_embedding(prompt)
+    return output
 
 if __name__ == '__main__':
+    active_tokens = 0
+    messages = list()
     while True:
         ## Do things
+        print('\n')
         user_input = input('USER: ')
-        ## cache message
-        memory_manager.generate_eidetic_memory('USER', user_input)
-        compose_gpt_message(user_input,'user')
-        ## process message
+        print('\n')
+        conversation_manager.log_message('USER', user_input)
+        raven_response = conversation_manager.generate_response()
+        print('\nRAVEN: %s\n' % raven_response)
+        conversation_manager.log_message('RAVEN', raven_response)
