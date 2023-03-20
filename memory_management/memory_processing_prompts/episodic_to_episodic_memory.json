@@ -1,6 +1,6 @@
 {
     "keywords":{
-        "system_message":"I will review the message provided to me and generate keywords so that all key elements are represented in as little comprehensible text possible. I will format my response like this:{\"keywords\":[]}\n%s",
+        "system_message":"I will review the messages provided to me and generate keywords so that all key elements are represented in as little comprehensible text possible. I will format my response like this:{\"keywords\":[]}\n%s",
         "temperature":0.0,
         "response_tokens":600
     },

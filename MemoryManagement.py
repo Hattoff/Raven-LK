@@ -46,6 +46,7 @@ class MemoryManager:
             self.__token_buffer = int(token_buffer)
             self.__max_tokens = int(max_tokens)
             self.__memories = list()
+            self.__previous_memory_ids = list()
             ## token count is the token estimate for each memory without modification
             self.__token_count = 0
             if cache is not None:
@@ -77,6 +78,10 @@ class MemoryManager:
         def memory_ids(self):
             ids = list(map(lambda m: m['id'], self.__memories))
             return ids
+        
+        @property
+        def previous_memory_ids(self):
+            return self.__previous_memory_ids
 
         ## Set all class attributes from the cache JSON
         def import_cache(self, cache):
@@ -86,6 +91,7 @@ class MemoryManager:
             self.__max_tokens = int(cache['max_tokens'])
             self.__token_count = int(cache['token_count'])
             self.__memories = list(cache['memories'])
+            self.__previous_memory_ids = list(cache['previous_memory_ids'])
             ## TODO: If cache is invalid, throw error.
 
         ## Return a JSON version of this object to save
@@ -100,6 +106,7 @@ class MemoryManager:
                 "max_tokens":self.__max_tokens,
                 "token_count":self.__token_count,
                 "memories":self.__memories,
+                "previous_memory_ids": self.__previous_memory_ids,
                 "timestamp": timestamp,
                 "timestring": timestring
             }
@@ -119,13 +126,13 @@ class MemoryManager:
                 return False
 
         def flush_memory_cache(self):
+            ## Cache the current caches memory ids and their timestamps for loading purposes
+            self.__previous_memory_ids.clear()
+            self.__previous_memory_ids = list(map(lambda m : m['id']),self.__memories)
+            ## Clear memory cache and reset token count
             self.__memories.clear()
             self.__token_count = 0
             self.__id = str(uuid4())
-
-    # @property
-    # def episodic_memory_caches(self):
-    #     return print(self.__episodic_memory_caches)
 
     ## Return the number of memories of a given cache
     def get_cache_memory_count(self,depth):
@@ -136,6 +143,10 @@ class MemoryManager:
     ## Return the list of memories currently in cache
     def get_memories_from_cache(self, depth):
         return self.__episodic_memory_caches[int(depth)].memories.copy()
+
+    ## Return id list of memories in previous cache before it was flushed.
+    def get_previous_memory_ids_from_cache(self, depth):
+        return self.__episodic_memory_caches[int(depth)].previous_memory_ids.copy()
 
     @property
     def cache_count(self):
@@ -215,19 +226,22 @@ class MemoryManager:
 
     ## Assemble and index eidetic memories from a message by a speaker
     ## Eidetic memory is the base form of all episodic memory
-    def generate_eidetic_memory(self, speaker, content, timestamp = time()):
+    def generate_eidetic_memory(self, speaker, content):
+        timestamp = time()
         self.debug_message('Generating eidetic memory...')
         unique_id = str(uuid4())
         timestring = self.timestamp_to_datetime(timestamp)
         depth = 0
 
         ## Execute sub-prompts to get metadata and summaries of the memories
-        eidetic_keywords_response = self.generate_memory_element('keywords', content, depth)
+        eidetic_keywords_response = self.generate_memory_element('keywords', '%s: %s' % (speaker, content), depth)
         eidetic_keywords = self.cleanup_keywords_memory_response(eidetic_keywords_response)
 
-        eidetic_summary_result = self.generate_memory_element('summary', content, depth)
+        eidetic_summary_result = self.generate_memory_element('summary', '%s: %s' % (speaker, content), depth)
         eidetic_summary = self.cleanup_summary_memory_response(eidetic_summary_result)
         eidetic_tokens = self.get_token_estimate(eidetic_summary)
+
+        content_tokens = self.get_token_estimate(content)
 
         ## Build episodic memory object
         eidetic_memory = {
@@ -235,6 +249,7 @@ class MemoryManager:
             "episodic_parent_id":"",
             "speaker": speaker,
             "content": content,
+            "content_tokens":content_tokens,
             "original_summary": eidetic_summary,
             "original_timestamp": timestamp,
             "original_timestring": timestring,
@@ -250,7 +265,8 @@ class MemoryManager:
         return eidetic_memory, eidetic_tokens
 
     ## Assemble an eposodic memory from a collection of eidetic or lower-depth episodic memories
-    def generate_episodic_memory(self, memories, depth, timestamp = time()):
+    def generate_episodic_memory(self, memories, depth):
+        timestamp = time()
         self.debug_message('Generating episodic memory of cache depth (%s)...' % str(depth))
         unique_id = str(uuid4())
         timestring = self.timestamp_to_datetime(timestamp)
@@ -500,7 +516,6 @@ class MemoryManager:
 
     #### Save vector to pinecone
     def save_vector_to_pinecone(self, vector, unique_id, metadata, namespace=""):
-        # self.debug_message('not saving vectors just yet... that will come later')
         self.debug_message('Saving vector to pinecone.')
         payload_content = {'id': unique_id, 'values': vector, 'metadata': metadata}
         payload = list()
