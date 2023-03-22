@@ -23,7 +23,7 @@ class ConversationManager:
         pinecone.init(api_key=self.open_file(self.__config['pinecone']['api_key']), environment=self.__config['pinecone']['environment'])
         self.__vector_db = pinecone.Index(self.__config['pinecone']['index'])
 
-        self.load_state()
+        # self.load_state()
 
     class MemoryLog:
         def __init__(self, max_log_tokens, min_log_count):
@@ -103,10 +103,11 @@ class ConversationManager:
             return self.__memories.copy()
 
     ## Load recent conversation log and conversation notes
-    def load_state(self):
+    def load_state(self, recent_message_count = 2):
         self.reload_memory_log(0)
         self.reload_memory_log(1)
-        self.display_recent_messages()
+        return self.get_recent_messages(recent_message_count)
+        # self.display_recent_messages()
 
     def reload_memory_log(self, depth=0):
             depth = int(depth)
@@ -154,6 +155,19 @@ class ConversationManager:
         ## If the last speaker was the user, prompt Raven to respond to their last message
         if eidetic_memories[0]['speaker'] == 'USER':
                 self.generate_response()
+
+    def get_recent_messages(self, message_count = 2):
+        message_count = min(int(message_count), self.__eidetic_memory_log.memory_count)
+        if message_count <= 0:
+            ## No messages to display
+            return list()
+        ## Display recent messages with dates and speaker stamps for context.
+        eidetic_memories = list(map(lambda m: m[0], self.__eidetic_memory_log.memories))
+        ## Sort list so most recent message is first
+        eidetic_memories = sorted(eidetic_memories, key=lambda x: x['original_timestamp'], reverse=True)
+        eidetic_memories = eidetic_memories[0:message_count]
+        eidetic_memories.reverse()
+        return eidetic_memories
             
     def log_message(self, speaker, content):
         eidetic_memory, eidetic_tokens, episodic_memory, episodic_tokens = self.__memory_manager.create_new_memory(speaker, content)

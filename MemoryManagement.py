@@ -21,7 +21,7 @@ class MemoryManager:
     def __init__(self):
         self.__config = configparser.ConfigParser()
         self.__config.read('config.ini')
-        self.__token_buffer = int(self.__config['memory_management']['token_buffer'])
+        self.__cache_token_limit = int(self.__config['memory_management']['cache_token_limit'])
         self.__max_tokens = int(self.__config['open_ai']['max_token_input'])
         self.__episodic_memory_caches = [] # index will represent memory depth, useful for dynamic memory expansion
         self.__max_episodic_depth = 2 # will restrict memory expansion. 0 is unlimited depth.
@@ -39,15 +39,14 @@ class MemoryManager:
     ## Houses memories of a particular depth. Each change will trigger will be followed with a state save
     class MemoryCache:
         ## Depth should not be changed after initialization.
-        ## If cache is not empty then load it, otherwise start fresh.Cache should be JSON.
-        def __init__(self, depth, token_buffer, max_tokens, cache=None):
+        ## If cache is not empty then load it, otherwise start fresh.
+        def __init__(self, depth, cache_token_limit, max_tokens, cache=None):
             self.__id = str(uuid4())
             self.__depth = int(depth)
-            self.__token_buffer = int(token_buffer)
+            self.__cache_token_limit = cache_token_limit
             self.__max_tokens = int(max_tokens)
             self.__memories = list()
             self.__previous_memory_ids = list()
-            ## token count is the token estimate for each memory without modification
             self.__token_count = 0
             if cache is not None:
                 self.import_cache(cache)
@@ -57,8 +56,8 @@ class MemoryManager:
             return self.__depth
 
         @property
-        def token_buffer(self):
-            return self.self.__token_buffer
+        def cache_token_limit(self):
+            return self.self.__cache_token_limit
 
         ## Returns a copy of memories; useful for compression and will not bork stuff when flushed
         @property
@@ -87,7 +86,7 @@ class MemoryManager:
         def import_cache(self, cache):
             self.__id = str(cache['id'])
             self.__depth = int(cache['depth'])
-            self.__token_buffer = int(cache['token_buffer'])
+            self.__cache_token_limit = int(cache['cache_token_limit'])
             self.__max_tokens = int(cache['max_tokens'])
             self.__token_count = int(cache['token_count'])
             self.__memories = list(cache['memories'])
@@ -102,7 +101,7 @@ class MemoryManager:
             cache = {
                 "id":self.__id,
                 "depth":self.__depth,
-                "token_buffer":self.__token_buffer,
+                "cache_token_limit":self.__cache_token_limit,
                 "max_tokens":self.__max_tokens,
                 "token_count":self.__token_count,
                 "memories":self.__memories,
@@ -120,7 +119,7 @@ class MemoryManager:
 
         ## Before adding a memory, check to see if there will be space with next memory.
         def has_memory_space(self, next_number_of_tokens):
-            if self.__token_count + int(next_number_of_tokens) <= (self.__max_tokens - self.__token_buffer):
+            if self.__token_count + int(next_number_of_tokens) <= self.__cache_token_limit:
                 return True
             else:
                 return False
@@ -169,7 +168,7 @@ class MemoryManager:
 
         for cache in state['memory_caches']:
             depth = cache['depth']
-            self.__episodic_memory_caches.append(self.MemoryCache(depth, self.__token_buffer, self.__max_tokens, cache))
+            self.__episodic_memory_caches.append(self.MemoryCache(depth, self.__cache_token_limit, self.__max_tokens, cache))
 
         ## TODO:
         ## load state, if that fails, try backup files
@@ -180,7 +179,7 @@ class MemoryManager:
     def create_state(self):
         for i in range(self.__max_episodic_depth+1):
             ## Initialize all episodic memory caches
-            self.__episodic_memory_caches.append(self.MemoryCache(i, self.__token_buffer, self.__max_tokens))
+            self.__episodic_memory_caches.append(self.MemoryCache(i, self.__cache_token_limit, self.__max_tokens))
         self.save_state()
 
     def save_state(self):

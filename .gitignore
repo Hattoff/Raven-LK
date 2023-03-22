@@ -1,6 +1,7 @@
 # API keys
 key_openai.txt
 key_pinecone.txt
+api_keys/*
 # Log files and memory indexes
 nexus/*
 gpt3_logs/*
@@ -13,3 +14,4 @@ memory_management/memory_states/*
 memory_management/memory_stash/*
 conversation_management/conversation_stash/*
 conversation_management/prompt_stash/*
+mem_wipe.txt
