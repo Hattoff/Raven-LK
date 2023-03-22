@@ -23,7 +23,7 @@ class ConversationManager:
         pinecone.init(api_key=self.open_file(self.__config['pinecone']['api_key']), environment=self.__config['pinecone']['environment'])
         self.__vector_db = pinecone.Index(self.__config['pinecone']['index'])
 
-        # self.load_state()
+        self.make_required_directories()
 
     class MemoryLog:
         def __init__(self, max_log_tokens, min_log_count):
@@ -101,6 +101,19 @@ class ConversationManager:
         @property
         def memories(self):
             return self.__memories.copy()
+
+    def make_required_directories(self):
+        for d in self.__config['required_directories']:
+            try:
+                val = self.__config['required_directories'][d]
+                path = ".\%s" % val.replace("/", "\\") 
+                if not os.path.exists(path):
+                    print('creating folder path: %s' % val)
+                else:
+                    print('folder path exists: %s' % val)
+                os.makedirs(path, exist_ok=True)
+            except OSError as err:
+                print(err)
 
     ## Load recent conversation log and conversation notes
     def load_state(self, recent_message_count = 2):

@@ -30,6 +30,8 @@ def send_message(event=None):
     ai_status.set("Raven is thinking...")
     Thread(target=get_ai_response).start()
 
+## Display the message from the user, if the timestamp has data then it will display 
+## the "summary" version which is italic and append the timestamp to the speaker tag
 def display_user_response(user_input, timestamp = ''):
     if timestamp != '':
         tag_name = 'user-summary'
@@ -48,6 +50,8 @@ def get_ai_response():
     display_ai_response(raven_response)
     ai_status.set("")
 
+## Display the response from the AI, if the timestamp has data then it will display 
+## the "summary" version which is italic and append the timestamp to the speaker tag
 def display_ai_response(response, timestamp = ''):
     if timestamp != '':
         tag_name = 'raven-summary'
@@ -60,12 +64,14 @@ def display_ai_response(response, timestamp = ''):
     chat_text.see(tk.END)
     chat_text.config(state='disabled')
 
+## Drop a new line when shift+enter is pressed, otherwise send the current message
 def on_return_key(event):
     if event.state & 0x1:  # Shift key is pressed
         user_entry.insert(tk.END, '\n')
     else:
         send_message()
 
+## Initialize the conversation and display the most recent messages for context
 def load_conversation(message_history_count = 2):
     recent_messages = conversation_manager.load_state(message_history_count)
     message_count = len(recent_messages)
@@ -233,11 +239,6 @@ if __name__ == "__main__":
     chat_text.tag_configure('raven', background='#343541', wrap='word', justify='left',foreground="white", font=("Calibri", 12))
     chat_text.tag_configure('raven-summary', background='#343541', wrap='word', justify='left', font=("Calibri", 12, "italic"),foreground="white")
     chat_text.tag_configure('system', justify='center', foreground="white", font=("Calibri", 14, "bold"))
-
-    # user_text = tk.StringVar()
-    # user_entry = ttk.Entry(main_frame, width=50, textvariable=user_text)
-    # # user_entry = tk.Text(main_frame, width=50,height=5, textvariable=user_text)
-    # user_entry.grid(column=0, row=1, sticky=(tk.W, tk.E, tk.N, tk.S))
 
     send_button = ttk.Button(main_frame, text="Send", command=send_message)
     send_button.grid(column=1, row=1, sticky=(tk.W, tk.E, tk.N, tk.S))
