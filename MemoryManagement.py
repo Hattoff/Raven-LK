@@ -25,12 +25,13 @@ class MemoryManager:
         self.__max_tokens = int(self.__config['open_ai']['max_token_input'])
         self.__episodic_memory_caches = [] # index will represent memory depth, useful for dynamic memory expansion
         self.__max_episodic_depth = 2 # will restrict memory expansion. 0 is unlimited depth.
+        self.__pinecone_indexing_enabled = self.__config.getboolean('pinecone', 'pinecone_indexing_enabled')
         self.debug_messages_enabled = True
         
         openai.api_key = self.open_file(self.__config['open_ai']['api_key'])
-        pinecone.init(api_key=self.open_file(self.__config['pinecone']['api_key']), environment=self.__config['pinecone']['environment'])
-
-        self.__vector_db = pinecone.Index(self.__config['pinecone']['index'])
+        if self.__pinecone_indexing_enabled:
+            pinecone.init(api_key=self.open_file(self.__config['pinecone']['api_key']), environment=self.__config['pinecone']['environment'])
+            self.__vector_db = pinecone.Index(self.__config['pinecone']['index'])
 
         ## When initialized, attempt to load cached state, otherwise make a new state
         if not (self.load_state()):
@@ -127,7 +128,7 @@ class MemoryManager:
         def flush_memory_cache(self):
             ## Cache the current caches memory ids and their timestamps for loading purposes
             self.__previous_memory_ids.clear()
-            self.__previous_memory_ids = list(map(lambda m : m['id'],self.__memories))
+            self.__previous_memory_ids = list(map(lambda m : m['id'],self.__memories)).copy()
             ## Clear memory cache and reset token count
             self.__memories.clear()
             self.__token_count = 0
@@ -464,7 +465,9 @@ class MemoryManager:
         ## The metadata and namespace are redundant but I need the data split for later
         metadata = {'memory_type': 'episodic', 'depth': str(depth)}
         namespace = self.__config['memory_management']['memory_namespace_template'] % depth
-        self.save_vector_to_pinecone(vector, memory_id, metadata, namespace)
+
+        if self.__pinecone_indexing_enabled:
+            self.save_vector_to_pinecone(vector, memory_id, metadata, namespace)
         
         ## Cache the id to delete for testing.
         with open('mem_wipe.txt', 'a', encoding='utf-8') as mem_wipe:
@@ -519,6 +522,8 @@ class MemoryManager:
 
     #### Save vector to pinecone
     def save_vector_to_pinecone(self, vector, unique_id, metadata, namespace=""):
+        if not self.__pinecone_indexing_enabled:
+            return
         self.debug_message('Saving vector to pinecone.')
         payload_content = {'id': unique_id, 'values': vector, 'metadata': metadata}
         payload = list()

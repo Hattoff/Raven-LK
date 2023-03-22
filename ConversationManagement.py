@@ -5,7 +5,6 @@ import glob
 from time import time,sleep
 import datetime
 from uuid import uuid4
-import pinecone
 import openai
 import tiktoken
 import re
@@ -20,8 +19,6 @@ class ConversationManager:
         self.__episodic_memory_log = self.MemoryLog(1000,4)
         
         openai.api_key = self.open_file(self.__config['open_ai']['api_key'])
-        pinecone.init(api_key=self.open_file(self.__config['pinecone']['api_key']), environment=self.__config['pinecone']['environment'])
-        self.__vector_db = pinecone.Index(self.__config['pinecone']['index'])
 
         self.make_required_directories()
 
