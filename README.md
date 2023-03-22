@@ -15,7 +15,7 @@ How to use:
 
 - Run make_required_folders.py to get the folders you need in place.
 - Make sure you have your key_openai.txt and key_pinecone.txt files in the api_keys folder.
-- Check the config file under pinecone and set your region (environment) and index (vector database name) to match your settings. _**If you intend on using pinecone, set the config file's pinecone_indexing_enabled = True and function calls to pinecone will be not be skipped. It is False by default**_
+- Check the config file under pinecone and set your region (environment) and index (vector database name) to match your settings. _**If you intend on using pinecone, set the config file's pinecone_indexing_enabled = True and function calls to pinecone will not be skipped. It is False by default**_
 - Run Raven-LK-py, it will create any folder structure you are missing which it is relying on.
 
 Raven-LK is in early development but here is a short list of features I intend to implement:
