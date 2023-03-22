@@ -1,5 +1,5 @@
 # Raven - Lore Keeper
-Based ~~losly~~ (recent work is strikingly similar) on the work by [David Shapiro](https://github.com/daveshap), where this bot gets its name, Raven-LK is intended to help its user create a fictional world and populate it with believable and detailed elements.
+Based on the work by [David Shapiro](https://github.com/daveshap), where this bot gets its name, Raven-LK is intended to help its user create a fictional world and populate it with believable and detailed elements.
 
 Raven-LK is in early development but here is a short list of features I intend to implement:
 
