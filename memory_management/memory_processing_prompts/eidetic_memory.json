@@ -1,9 +1,4 @@
 {
-    "keywords":{
-        "system_message":"I will review the message authored by %s and generate keywords so that all key elements are represented in as little comprehensible text possible. I will format my response like this:{\"keywords\":[]}\n%s",
-        "temperature":0.0,
-        "response_tokens":250
-    },
     "summary":{
         "system_message":"I will review the message authored by %s and summarize it so that all key elements are represented in as little comprehensible text possible.\n%s",
         "temperature":0.0,

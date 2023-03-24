@@ -82,13 +82,13 @@ def load_conversation(message_history_count = 2):
         chat_text.insert(tk.END, "\nWelcome Back!\n\n", 'system')
     for m in range(message_count-1):
         if recent_messages[m]['speaker'] == 'USER':
-            display_user_response(recent_messages[m]['content'],recent_messages[m]['original_timestring'])
+            display_user_response(recent_messages[m]['content'],recent_messages[m]['timestring'])
         else:
-            display_ai_response(recent_messages[m]['content'],recent_messages[m]['original_timestring'])
+            display_ai_response(recent_messages[m]['content'],recent_messages[m]['timestring'])
     if recent_messages[message_count-1]['speaker'] == 'USER':
         user_entry.insert("1.0", recent_messages[message_count-1]['content'])
     else:
-        display_ai_response(recent_messages[message_count-1]['content'],recent_messages[message_count-1]['original_timestring'])
+        display_ai_response(recent_messages[message_count-1]['content'],recent_messages[message_count-1]['timestring'])
 
 ## Set the center of the window to the user's cursor
 def snap_window_to_cursor(window_width = 400, window_height = 400):

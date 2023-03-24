@@ -45,7 +45,7 @@ class ConversationManager:
                     self.__memories = list(map(lambda m: (m, m['content_tokens']), memories))
                 else:
                     ## Episodic memory list
-                    self.__memories = list(map(lambda m: (m, m['original_tokens']), memories))
+                    self.__memories = list(map(lambda m: (m, m['summary_tokens']), memories))
                 self.__check_memory_log()
                 self.__generate_memory_string()
 
@@ -58,7 +58,7 @@ class ConversationManager:
                 ## Rebuild the memory list with a minumum number of memories, but continue to add memories until token count is reached
                 memories = self.__memories.copy()
                 ## Sort list so most recent memories are first
-                memories = sorted(memories,key=lambda x: x[0]['original_timestamp'],reverse=True)
+                memories = sorted(memories,key=lambda x: x[0]['timestamp'],reverse=True)
                 self.__memories.clear()
                 token_count = 0
                 for m in memories:
@@ -85,7 +85,7 @@ class ConversationManager:
                 if int(self.__memories[0][0]['depth']) == 0:
                     self.__memory_string = '\n'.join('%s: %s' % (m[0]['speaker'],m[0]['content']) for m in self.__memories)
                 else:
-                    self.__memory_string = '\n'.join(m[0]['original_summary'] for m in self.__memories)
+                    self.__memory_string = '\n'.join(m[0]['summary'] for m in self.__memories)
 
         @property
         def memory_string(self):
@@ -158,10 +158,10 @@ class ConversationManager:
         ## Display recent messages with dates and speaker stamps for context.
         eidetic_memories = list(map(lambda m: m[0], self.__eidetic_memory_log.memories))
         ## Sort list so most recent message is first
-        eidetic_memories = sorted(eidetic_memories, key=lambda x: x['original_timestamp'], reverse=True)
+        eidetic_memories = sorted(eidetic_memories, key=lambda x: x['timestamp'], reverse=True)
         eidetic_memories = eidetic_memories[0:display_count]
         for i in reversed(range(display_count)):
-            print('\n[%s] %s: %s\n' % (eidetic_memories[i]['original_timestring'],eidetic_memories[i]['speaker'],eidetic_memories[i]['content']))
+            print('\n[%s] %s: %s\n' % (eidetic_memories[i]['timestring'],eidetic_memories[i]['speaker'],eidetic_memories[i]['content']))
         ## If the last speaker was the user, prompt Raven to respond to their last message
         if eidetic_memories[0]['speaker'] == 'USER':
                 self.generate_response()
@@ -174,7 +174,7 @@ class ConversationManager:
         ## Display recent messages with dates and speaker stamps for context.
         eidetic_memories = list(map(lambda m: m[0], self.__eidetic_memory_log.memories))
         ## Sort list so most recent message is first
-        eidetic_memories = sorted(eidetic_memories, key=lambda x: x['original_timestamp'], reverse=True)
+        eidetic_memories = sorted(eidetic_memories, key=lambda x: x['timestamp'], reverse=True)
         eidetic_memories = eidetic_memories[0:message_count]
         eidetic_memories.reverse()
         return eidetic_memories
@@ -188,38 +188,74 @@ class ConversationManager:
     def generate_response(self):
         prompt_obj = self.load_json('%s/%s.json' % (self.__config['conversation_management']['conversation_management_dir'], 'conversation_prompt'))
 
-        conversation_notes_obj = prompt_obj['conversation_prompt']['conversation_notes']
-        conversation_log_obj = prompt_obj['conversation_prompt']['conversation_log']
-        
-        episodic_string = self.__episodic_memory_log.memory_string
-        eidetic_string = self.__eidetic_memory_log.memory_string
+        notes_body = self.__episodic_memory_log.memory_string
+        conversation_body = self.__eidetic_memory_log.memory_string
+        anticipation_body = self.__get_anticipation_response(conversation_body, prompt_obj)
+
         if self.__episodic_memory_log.memory_count > 0:
-            prompt_instructions = '%s and %s' % (conversation_notes_obj['instruction'], conversation_log_obj['instruction'])
-            prompt_body = '%s\n%s\n%s\n%s' % (conversation_notes_obj['prompt_body'], episodic_string, conversation_log_obj['prompt_body'], eidetic_string)
+            prompt_instructions = 'conversation notes and conversation log'
+            prompt_body = 'ANTICIPATED USER NEEDS:\n%s\nCONVERSATION NOTES:\n%s\nCONVERSATION LOG:\n%s' % (anticipation_body, notes_body, conversation_body)
         else:
-            prompt_instructions = conversation_log_obj['instruction']
-            prompt_body = '%s\n%s' % (conversation_log_obj['prompt_body'], eidetic_string)
+            prompt_instructions = 'conversation log'
+            prompt_body = 'ANTICIPATED USER NEEDS:\n%s\nCONVERSATION LOG:\n%s' % (anticipation_body, conversation_body)
 
-        prompt_template = prompt_obj['conversation_prompt']['prompt_template']
-        core_heuristic = prompt_obj['conversation_prompt']['core_heuristic']
+        response = self.__get_conversation_response(prompt_body, prompt_instructions, prompt_obj)
+        
+        return response
 
-        prompt = prompt_template % (core_heuristic, prompt_instructions, prompt_body)
+    def __get_conversation_response(self, prompt_body, prompt_instructions, prompt_obj):
+        conversation_log_obj = prompt_obj['conversation']
+
+        prompt = conversation_log_obj['prompt'] % (prompt_instructions, prompt_body)
+        temperature = float(conversation_log_obj['temperature'])
+        response_tokens = int(conversation_log_obj['response_tokens'])
+
+        timestring = str(time())
+        conversation_stash_dir = self.__config['conversation_management']['conversation_stash_dir']
         ## Save prompt for debug
-        prompt_stash_dir = self.__config['conversation_management']['conversation_prompt_stash_dir']
-        prompt_path = '%s/%s.txt' % (prompt_stash_dir, str(time()))
+        prompt_path = '%s/%s_prompt.txt' % (conversation_stash_dir, timestring)
         self.save_file(prompt_path, prompt)
 
-        temperature = float(prompt_obj['conversation_prompt']['temperature'])
-        response_tokens = int(prompt_obj['conversation_prompt']['response_tokens'])
         gpt_messages = list()
         gpt_messages.append(self.compose_gpt_message(prompt, 'user'))
 
         response, tokens = self.gpt_completion(gpt_messages, temperature, response_tokens)
 
         ## Save response for debug
-        conversation_stash_dir = self.__config['conversation_management']['conversation_stash_dir']
-        conversation_path = '%s/%s.txt' % (conversation_stash_dir, str(time()))
-        self.save_file(conversation_path, response)
+        response_path = '%s/%s_response.txt' % (conversation_stash_dir, timestring)
+        self.save_file(response_path, response)
+
+        return response
+
+    ## Generate the conversation's anticipation section
+    def __get_anticipation_response(self, conversation_body, prompt_obj):
+        anticipation_obj = prompt_obj['anticipation']
+
+        notes_body = self.__episodic_memory_log.memory_string
+        if self.__episodic_memory_log.memory_count > 0:
+            prompt_instructions = 'chat notes and chat log'
+            prompt_body = 'CHAT NOTES:\n%s\nCHAT LOG:\n%s' % (notes_body, conversation_body)
+        else:
+            prompt_instructions = 'chat log'
+            prompt_body = conversation_body
+
+        prompt = anticipation_obj['prompt'] % (prompt_instructions, prompt_body)
+        temperature = float(prompt_obj['anticipation']['temperature'])
+        response_tokens = int(prompt_obj['anticipation']['response_tokens'])
+
+        timestring = str(time())
+        anticipation_stash_dir = self.__config['conversation_management']['anticipation_stash_dir']
+        ## Save prompt for debug
+        prompt_path = '%s/%s_prompt.txt' % (anticipation_stash_dir, timestring)
+        self.save_file(prompt_path, prompt)
+
+        gpt_messages = list()
+        gpt_messages.append(self.compose_gpt_message(prompt, 'user'))
+        response, tokens = self.gpt_completion(gpt_messages, temperature, response_tokens)
+
+        ## Save response for debug
+        response_path = '%s/%s_response.txt' % (anticipation_stash_dir, timestring)
+        self.save_file(response_path, response)
 
         return response
         
@@ -246,8 +282,6 @@ class ConversationManager:
             role = 'system'
             return {"role":role,"name":name,"content": content}
 
-    
-
     def gpt3_embedding(self, content):
         engine = self.__config['open_ai']['input_engine']
         content = content.encode(encoding='ASCII',errors='ignore').decode()  # fix any UNICODE errors
@@ -262,7 +296,7 @@ class ConversationManager:
         pres_pen=0.0
 
         max_retry = 5
-        retry = 0
+        retry = 1
         while True:
             try:
                 response = openai.ChatCompletion.create(
@@ -288,7 +322,8 @@ class ConversationManager:
                 if retry >= max_retry:
                     return "GPT3.5 error: %s" % oops, -1
                 print('Error communicating with OpenAI:', oops)
-                sleep(10)
+                print('Retrying in %s...'%str(10*retry))
+                sleep(10*retry)
 
     def print_response_stats(self, response):
         response_id = ('\nResponse %s' % str(response['id']))
