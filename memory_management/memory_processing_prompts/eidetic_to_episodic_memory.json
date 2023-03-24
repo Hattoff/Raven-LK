@@ -1,9 +1,4 @@
 {
-    "keywords":{
-        "system_message":"I will review the messages between USER and RAVEN and generate keywords so that all key elements are represented in as little comprehensible text possible. I will format my response like this:{\"keywords\":[]}\n%s",
-        "temperature":0.0,
-        "response_tokens":500
-    },
     "summary":{
         "system_message":"I will read the following conversation between USER and RAVEN below and then follow the directions in the INSTRUCTIONS section.\n%s\nINSTRUCTIONS:I will summarize the conversation so that all key elements are represented in as little comprehensible text possible.",
         "temperature":0.0,
