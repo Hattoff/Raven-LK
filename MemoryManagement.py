@@ -47,10 +47,11 @@ class MemoryManager:
             self.__cache_token_limit = cache_token_limit
             self.__max_tokens = int(max_tokens)
             self.__memories = list()
+            self.__current_memory_ids = list()
             self.__previous_memory_ids = list()
             self.__token_count = 0
             if cache is not None:
-                self.import_cache(cache)
+                self.load_cache(cache)
 
         @property
         def depth(self):
@@ -84,13 +85,14 @@ class MemoryManager:
             return self.__previous_memory_ids
 
         ## Set all class attributes from the cache JSON
-        def import_cache(self, cache):
+        def load_cache(self, cache):
             self.__id = str(cache['id'])
             self.__depth = int(cache['depth'])
             self.__cache_token_limit = int(cache['cache_token_limit'])
             self.__max_tokens = int(cache['max_tokens'])
             self.__token_count = int(cache['token_count'])
             self.__memories = list(cache['memories'])
+            self.__current_memory_ids = list(cache['current_memory_ids'])
             self.__previous_memory_ids = list(cache['previous_memory_ids'])
             ## TODO: If cache is invalid, throw error.
 
@@ -106,6 +108,7 @@ class MemoryManager:
                 "max_tokens":self.__max_tokens,
                 "token_count":self.__token_count,
                 "memories":self.__memories,
+                "current_memory_ids": self.__current_memory_ids,
                 "previous_memory_ids": self.__previous_memory_ids,
                 "timestamp": timestamp,
                 "timestring": timestring
@@ -117,6 +120,7 @@ class MemoryManager:
         def add_memory(self, memory, number_of_tokens):
             self.__token_count += int(number_of_tokens)
             self.__memories.append(memory)
+            self.__current_memory_ids.append(memory['id'])
 
         ## Before adding a memory, check to see if there will be space with next memory.
         def has_memory_space(self, next_number_of_tokens):
@@ -125,10 +129,13 @@ class MemoryManager:
             else:
                 return False
 
+        def transfer_memory_ids(self):
+            ## Cache the current caches memory ids for conversation loading purposes
+            self.__previous_memory_ids = self.__current_memory_ids.copy()
+            self.__current_memory_ids.clear()
+
         def flush_memory_cache(self):
-            ## Cache the current caches memory ids and their timestamps for loading purposes
-            self.__previous_memory_ids.clear()
-            self.__previous_memory_ids = list(map(lambda m : m['id'],self.__memories)).copy()
+
             ## Clear memory cache and reset token count
             self.__memories.clear()
             self.__token_count = 0
@@ -233,15 +240,11 @@ class MemoryManager:
         timestring = self.timestamp_to_datetime(timestamp)
         depth = 0
 
-        ## Execute sub-prompts to get metadata and summaries of the memories
-        eidetic_keywords_response = self.generate_memory_element('keywords', '%s: %s' % (speaker, content), depth, speaker)
-        eidetic_keywords = self.cleanup_keywords_memory_response(eidetic_keywords_response)
-
-        eidetic_summary_result = self.generate_memory_element('summary', '%s: %s' % (speaker, content), depth, speaker)
-        eidetic_summary = self.cleanup_summary_memory_response(eidetic_summary_result)
-        eidetic_tokens = self.get_token_estimate(eidetic_summary)
-
         content_tokens = self.get_token_estimate(content)
+
+        summary_result = self.summarize_content('%s: %s' % (speaker, content), depth, speaker, content_tokens = content_tokens)
+        summary = self.cleanup_response(summary_result)
+        summary_tokens = self.get_token_estimate(summary)
 
         ## Build episodic memory object
         eidetic_memory = {
@@ -250,19 +253,13 @@ class MemoryManager:
             "speaker": speaker,
             "content": content,
             "content_tokens":content_tokens,
-            "original_summary": eidetic_summary,
-            "original_timestamp": timestamp,
-            "original_timestring": timestring,
-            "original_tokens":int(eidetic_tokens),
-            "is_retconned": False,
-            "retcon_summary": "",
-            "retcon_rank":0.0,
-            "retcon_time": "",
-            "retcon_tokens":0,
-            "keywords": eidetic_keywords,
+            "summary": summary,
+            "summary_tokens":int(summary_tokens),
+            "timestamp": timestamp,
+            "timestring": timestring,
             "depth":int(depth)
         }
-        return eidetic_memory, eidetic_tokens
+        return eidetic_memory, summary_tokens
 
     ## Assemble an eposodic memory from a collection of eidetic or lower-depth episodic memories
     def generate_episodic_memory(self, memories, depth):
@@ -276,69 +273,31 @@ class MemoryManager:
         content_tokens = 0
         memory_ids = []
         for memory in memories:
-            content += '%s\n' % (memory['original_summary'])
-            content_tokens += int(memory['original_tokens'])
+            content += '%s\n' % (memory['summary'])
+            content_tokens += int(memory['summary_tokens'])
             memory_ids.append(str(memory['id']))
 
-        ## Execute sub-prompts to get metadata and summaries of the memories
-        episodic_keywords_response = self.generate_memory_element('keywords', content, depth)
-        episodic_keywords = self.cleanup_keywords_memory_response(episodic_keywords_response)
-
-        episodic_summary_result = self.generate_memory_element('summary', content, depth)
-        episodic_summary = self.cleanup_summary_memory_response(episodic_summary_result)
-        episodic_tokens = self.get_token_estimate(episodic_summary)
+        summary_result = self.summarize_content(content, depth, content_tokens = content_tokens)
+        summary = self.cleanup_response(summary_result)
+        summary_tokens = self.get_token_estimate(summary)
 
         ## Build episodic memory object
         episodic_memory = {
             "id": unique_id,
             "episodic_parent_id":"",
             "lower_memory_ids": memory_ids,
-            "original_summary": episodic_summary,
-            "original_timestamp": timestamp,
-            "original_timestring": timestring,
-            "original_tokens":int(episodic_tokens),
-            "is_retconned": False,
-            "retcon_summary": "",
-            "retcon_rank":0.0,
-            "retcon_time": "",
-            "retcon_tokens":0,
-            "keywords": episodic_keywords,
+            "summary": summary,
+            "summary_tokens":int(summary_tokens),
+            "anticipation": "",
+            "anticipation_tokens": "",
+            "timestamp": timestamp,
+            "timestring": timestring,
             "depth": int(depth)
         }
-        return episodic_memory, episodic_tokens
+        return episodic_memory, summary_tokens
 
-    def cleanup_keywords_memory_response(self, keywords):
-        if type(keywords) == list:
-                return keywords
-        keywords_obj = {}
-        try:
-            keywords_obj = json.loads(keywords)
-        except Exception as err:
-            print('ERROR: unable to parse the json object when creating eidetic memory keyword element')
-            print('Value from GPT:\n\n%s' % keywords)
-            self.breakpoint('\n\npausing...')
-            return []
-
-        dict_keys = list(keywords_obj.keys())
-        if len(dict_keys) > 1:
-            print('ERROR: unknown response for keyword memory element')
-            print('Value from GPT:\n\n%s' % keywords)
-            print(keywords_obj)
-            self.breakpoint('\n\npausing...')
-            return []
-        else:
-            key = dict_keys[0]
-            if type(keywords_obj[key]) == list:
-                return keywords_obj[key]
-            else:
-                print('ERROR: unknown response for keyword memory element')
-                print('Value from GPT:\n\n%s' % keywords)
-                print(keywords_obj)
-                self.breakpoint('\n\npausing...')
-                return []
-
-    ## Strip away unwanted characters from summary response
-    def cleanup_summary_memory_response(self, response):
+    ## Strip away unwanted characters from gpt response
+    def cleanup_response(self, response):
         response = response.strip()
         response = re.sub('[\r\n]+', '\n', response)
         response = re.sub('[\t ]+', ' ', response)
@@ -356,8 +315,6 @@ class MemoryManager:
             self.compress_memory_cache(depth)
             self.debug_message('Flushing cache of depth (%s)...' % str(depth))
             self.__episodic_memory_caches[int(depth)].flush_memory_cache()
-            # if not self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
-            #     ## TODO: There is an error because the next message is exceptionally long.
             # Add the new message to the recently flushed memory cache
             self.__episodic_memory_caches[int(depth)].add_memory(memory, tokens)
         self.debug_message('Saving state...')
@@ -378,9 +335,11 @@ class MemoryManager:
             episodic_memory, episodic_tokens = self.compress_memory_cache(depth)
             self.__episodic_memory_caches[depth].flush_memory_cache()
             self.__episodic_memory_caches[depth].add_memory(memory, tokens)
-        self.debug_message('Saving state...')
+        
         self.index_memory(memory)
-        self.save_state()
+        if speaker == 'RAVEN':
+            self.debug_message('Saving state...')
+            self.save_state()
         return memory, tokens, episodic_memory, episodic_tokens
 
     ## Summarize all active memories and return the new memory id
@@ -391,6 +350,9 @@ class MemoryManager:
         self.debug_message('Compressing cache of depth (%s)...' % str(depth))
         ## Get a copy of the cached memories
         memories = self.__episodic_memory_caches[int(depth)].memories
+        ## Ensure the memory cache current memory ids transfer to the previous memory ids list
+        self.__episodic_memory_caches[int(depth)].transfer_memory_ids()
+
 
         self.debug_message('Pushing compressed memory to cache of depth (%s)...' % str(int(depth)+1))
         ## Generate a higher depth memory
@@ -402,19 +364,8 @@ class MemoryManager:
         self.__episodic_memory_caches[int(depth)].flush_memory_cache()
         return episodic_memory, episodic_tokens
 
-    ## Format eidetic memory with a speaker and timestamp for context
-    def format_eidetic_memory(self, memory):
-        message = '%s: %s - %s' % (memory['speaker'], memory['original_timestring'], memory['content'])
-        return message
 
-    ## Format episodic memory with a timestamp for context
-    def format_episodic_memory(self, memory):
-        message = '%s: %s' % (memory['original_timestring'], memory['original_summary'])
-        return message
-
-    ## Generate a summary, keyword, or other element for a eidetic messages or episodic summaries
-    ## speaker parameter is only used by eidetic memory generation at depth = 0
-    def generate_memory_element(self, element_type, content, depth, speaker = '', content_tokens=10):
+    def summarize_content(self, content, depth, speaker = '', content_tokens = 0):
         ## Choose which memory processing prompt to use
         if int(depth) == 0:
             prompt_name = 'eidetic_memory'
@@ -427,17 +378,17 @@ class MemoryManager:
         prompt_obj = self.load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
         
         ## Sum the token count for the content with the intended prompt token count
-        response_tokens = int(prompt_obj[element_type]['response_tokens']) + int(content_tokens)
+        response_tokens = int(prompt_obj['summary']['response_tokens']) + int(content_tokens)
         if response_tokens > self.__max_tokens:
             response_tokens = self.__max_tokens
-        temperature = float(prompt_obj[element_type]['temperature'])
+        temperature = float(prompt_obj['summary']['temperature'])
 
         ## Generate memory element
         messages = list()
         if int(depth) == 0:
-            prompt_content = prompt_obj[element_type]['system_message'] % (speaker, content)
+            prompt_content = prompt_obj['summary']['system_message'] % (speaker, content)
         else:
-            prompt_content = prompt_obj[element_type]['system_message'] % content
+            prompt_content = prompt_obj['summary']['system_message'] % content
         messages.append(self.compose_gpt_message(prompt_content,'user'))
         memory_element, total_tokens = self.gpt_completion(messages, temperature, response_tokens)
         return memory_element
@@ -461,12 +412,12 @@ class MemoryManager:
 
         self.save_memory_locally(memory)
         self.parent_local_child_memories(memory)
-        vector = self.gpt3_embedding(str(memory['original_summary']))
-        ## The metadata and namespace are redundant but I need the data split for later
-        metadata = {'memory_type': 'episodic', 'depth': str(depth)}
-        namespace = self.__config['memory_management']['memory_namespace_template'] % depth
 
         if self.__pinecone_indexing_enabled:
+            vector = self.gpt3_embedding(str(memory['summary']))
+            ## The metadata and namespace are redundant but I need the data split for later
+            metadata = {'memory_type': 'episodic', 'depth': str(depth)}
+            namespace = self.__config['memory_management']['memory_namespace_template'] % depth
             self.save_vector_to_pinecone(vector, memory_id, metadata, namespace)
         
         ## Cache the id to delete for testing.
@@ -590,161 +541,3 @@ class MemoryManager:
         tokens = encoding.encode(content)
         token_count = len(tokens)
         return token_count
-######################################################
-
-
-    # ## Update memory with the episodic id.
-    # ## Each memory will have a parent (episodic) id to allow for
-    # ## recursive retcon updates from either depth direction.
-    # def set_episodic_id(self, memory_id, episodic_id, memory_path, memory_type):
-    #     ## TODO: Open memory file, if the eposodic id is empty, add it and overwrite the old content.
-    #     ## Don't update if the episodic_id has data. Throw error or something.
-    #     return ""
-
-
-
-    # ## Save prompt as a json file in the prompt directory
-    # def save_prompt(self, prefix, content, directory = config['raven']['prompt_dir'], filetime = time()):
-    #     prefix.replace('.json','')
-    #     filename = '%s%s.json' % (prompt_prefix, filetime)
-    #     save_json('%s/%s' % (directory, filename, content))
-
-    # ## Get the last n conversation memories
-    # def get_recent_messages(self, message_history_count = 30, sort_decending = True):
-    #     files = glob.glob('%s/*.json' % config['raven']['nexus_dir'])
-    #     files.sort(key=os.path.getmtime, reverse=True)
-    #     message_count = int(message_history_count)
-    #     if len(files) < message_count:
-    #         message_count = len(files)
-    #     messages = list()
-    #     for message in list(files):
-    #         message = message.replace('\\','/')
-    #         info = load_json(message)
-    #         messages.append(info)
-    #     return_messages = messages[0:message_count-1]
-    #     if sort_decending:
-    #         sorted(return_messages, key=lambda d: d['time'], reverse=False)
-    #     return return_messages
-
-    # ## Breakup memories into chunks so they meet token restrictions
-    # def chunk_memories(self, memories, token_response_limit=int(config['raven']['summary_token_response'])):
-    #     ## Each subsequent chunk will subtract the max_token_input from the token_response_limit
-    #     max_token_input = int(config['open_ai']['max_token_input'])
-    #     token_per_character = int(config['open_ai']['token_per_character'])
-
-    #     blocks = list() # When the token limit overflows after chunking, a new block will be needed
-    #     chunks = list() # All chunks which will fall within the token limit including responses go here
-    #     chunk = list() # All memories which will fall within the token limit will go here
-
-    #     memory_count = len(memories)-1
-    #     block_count = 0
-    #     block_token_response_limit = token_response_limit
-    #     current_memory_index = 0
-
-    #     max_iter = 100 # If this is hit there is something wrong
-    #     iter = 0
-
-    #     blocking_done = False
-    #     while not blocking_done:
-    #         chunking_done = False
-    #         ## TODO: Come back to this decision of doubling the token response limit for each block
-    #         ## Initial reasoning behind this, a summary of summaries for the chunks would be created
-    #         ## then a summary of the next block, so we would need double the response space for each block.
-    #         block_token_response_limit = (2 * block_count * token_response_limit)
-    #         remaining_chunk_tokens = max_token_input - block_token_response_limit
-    #         while not chunking_done:
-    #             chunk_length = 0
-    #             chunk.clear()
-    #             memories_this_chunk = 0
-    #             for i in range(current_memory_index, memory_count):
-    #                 iter += 1
-    #                 mem = memories[i]
-    #                 message = format_summary_memory(mem)
-    #                 ## TODO: Get actual token length from open ai
-    #                 message_length = math.ceil(len(message)/token_per_character) # Estimate token length
-    #                 chunk_length += message_length
-    #                 if chunk_length > remaining_chunk_tokens and memories_this_chunk == 0:
-    #                     current_memory_index = i
-    #                     ## Chunking cannot continue, new block will be created
-    #                     block_count += 1
-    #                     blocks.append(chunks.copy())
-    #                     chunking_done = True
-    #                     breakpoint('\n\nChunking cannot continue until a new block is created...\n\n')
-    #                     break
-    #                 elif chunk_length > remaining_chunk_tokens:
-    #                     current_memory_index = i
-    #                     ## Chunking can continue, new chunk will be created
-    #                     remaining_chunk_tokens -= token_response_limit
-    #                     chunks.append(chunk.copy())
-    #                     chunking_done = True
-    #                     break
-    #                 elif i == memory_count-1:
-    #                     ## End of process, append remaining chunk and add chunks to block
-    #                     chunk.append(mem)
-    #                     chunks.append(chunk.copy())
-    #                     blocks.append(chunks.copy())
-    #                     chunking_done = True
-    #                     blocking_done = True
-    #                 else:
-    #                     ## Chunking continues, decrement remaining tokens
-    #                     chunk.append(mem)
-    #                     memories_this_chunk += 1
-    #                     continue
-
-    #                 if iter >= max_iter:
-    #                     chunking_done = True
-    #                     blocking_done = True
-    #                     breakpoint('\n\nSomething went wrong with the memory chunker. Max iterations reached.\n\n')
-    #     return blocks
-
-    # def summarize_memories(self, memories):  # summarize a block of memories into one payload
-    #     memories = sorted(memories, key=lambda d: d['time'], reverse=False)  # sort them chronologically
-    #     blocked_summary = '' ## TODO: Implement block summary strategy
-    #     chunked_summary = ''
-    #     blocks = chunk_memories(memories)
-    #     block_count = len(blocks)
-    #     for chunks in blocks:
-    #         chunked_summary = '' # Combine all chunk summaries into one long prompt and use it for context
-    #         for chunk in chunks:
-    #             chunked_message = '' # Combine all memories into a long prompt and have it summarized
-    #             for mem in chunk:
-    #                 message = format_summary_memory(mem)
-    #                 chunked_message += message.strip() + '\n\n'
-    #             chunked_message = chunked_message.strip()
-
-    #             chunked_prompt = open_file('prompt_notes.txt').replace('<<INPUT>>', chunked_summary + chunked_message)
-    #             save_prompt('summary_chunk_prompt_',chunked_prompt)
-
-    #             chunked_notes = gpt_completion(chunked_prompt)
-    #             save_prompt('summary_chunk_notes_',chunked_notes)
-
-    #             chunked_summary = chunked_notes.strip() + '\n'
-    #     return chunked_summary.strip()
-
-    #     def get_token_count(self, content):
-    #         content = content.encode(encoding='ASCII',errors='ignore').decode()  # fix any UNICODE errors
-    #         encoding = tiktoken.get_encoding(str(self.config['open_ai']['model']))
-    #         tokens = encoding.encode(content)
-    #         token_count = len(tokens)
-    #         return token_count
-
-
-# ## The following is from #6 - Counting tokens for chat API calls: https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
-# def estimate_message_tokens (messages, model=str(['openai']['model'])):
-#     try:
-#         encoding = tiktoken.encoding_for_model(model)
-#     except KeyError:
-#         encoding = tiktoken.get_encoding("cl100k_base")
-#     if model == "gpt-3.5-turbo-0301":  # note: future models may deviate from this
-#         num_tokens = 0
-#         for message in messages:
-#             num_tokens += 4  # every message follows <im_start>{role/name}\n{content}<im_end>\n
-#             for key, value in message.items():
-#                 num_tokens += len(encoding.encode(value))
-#                 if key == "name":  # if there's a name, the role is omitted
-#                     num_tokens += -1  # role is always required and always 1 token
-#         num_tokens += 2  # every reply is primed with <im_start>assistant
-#         return num_tokens
-#     else:
-#         raise NotImplementedError(f"""num_tokens_from_messages() is not presently implemented for model {model}.
-# See https://github.com/openai/openai-python/blob/main/chatml.md for information on how messages are converted to tokens.""")
