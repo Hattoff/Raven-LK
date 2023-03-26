@@ -15,8 +15,8 @@ class ConversationManager:
         self.__config = configparser.ConfigParser()
         self.__config.read('config.ini')
         self.__memory_manager = MemoryManager()
-        self.__eidetic_memory_log = self.MemoryLog(1000,4)
-        self.__episodic_memory_log = self.MemoryLog(1000,4)
+        self.__eidetic_memory_log = self.MemoryLog(500,4)
+        self.__episodic_memory_log = self.MemoryLog(500,4)
         
         openai.api_key = self.open_file(self.__config['open_ai']['api_key'])
 

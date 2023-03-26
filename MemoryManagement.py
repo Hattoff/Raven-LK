@@ -42,14 +42,19 @@ class MemoryManager:
         ## Depth should not be changed after initialization.
         ## If cache is not empty then load it, otherwise start fresh.
         def __init__(self, depth, cache_token_limit, max_tokens, cache=None):
+            self.debug_messages_enabled = True
             self.__id = str(uuid4())
             self.__depth = int(depth)
+            self.__config = configparser.ConfigParser()
+            self.__config.read('config.ini')
             self.__cache_token_limit = cache_token_limit
             self.__max_tokens = int(max_tokens)
             self.__memories = list()
             self.__current_memory_ids = list()
             self.__previous_memory_ids = list()
             self.__token_count = 0
+            self.__memory_stash_folder = (self.__config['memory_management']['stash_folder_template'] % self.__depth)
+            self.__memory_dir = '%s/%s' % (self.__config['memory_management']['memory_stash_dir'], self.__memory_stash_folder)
             if cache is not None:
                 self.load_cache(cache)
 
@@ -119,8 +124,17 @@ class MemoryManager:
         ## Memory space check is NOT enforced so check it before adding a memory
         def add_memory(self, memory, number_of_tokens):
             self.__token_count += int(number_of_tokens)
+            memory_count = len(self.__memories)
+            ## Link memory siblings
+            if memory_count > 0:
+                memory_id = memory['id']
+                past_sibling_id = self.__memories[memory_count-1]['id']
+                self.update_past_sibling(memory_id, past_sibling_id)
+                memory['past_sibling'] = past_sibling_id
             self.__memories.append(memory)
             self.__current_memory_ids.append(memory['id'])
+            self.parent_local_child_memories(memory)
+            self.save_memory_locally(memory)
 
         ## Before adding a memory, check to see if there will be space with next memory.
         def has_memory_space(self, next_number_of_tokens):
@@ -135,11 +149,61 @@ class MemoryManager:
             self.__current_memory_ids.clear()
 
         def flush_memory_cache(self):
-
             ## Clear memory cache and reset token count
             self.__memories.clear()
             self.__token_count = 0
             self.__id = str(uuid4())
+
+        def open_file(self, filepath):
+            with open(filepath, 'r', encoding='utf-8') as infile:
+                return infile.read()
+
+        def save_file(self, filepath, content):
+            with open(filepath, 'w', encoding='utf-8') as outfile:
+                outfile.write(content)
+
+        def load_json(self, filepath):
+            with open(filepath, 'r', encoding='utf-8') as infile:
+                return json.load(infile)
+
+        def save_json(self, filepath, payload):
+            with open(filepath, 'w', encoding='utf-8') as outfile:
+                json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
+
+        ## Add memory id to past sibling's 'next_sibling' id
+        def update_past_sibling(self, memory_id, past_sibling_id):
+            sibling_path = '%s/%s.json' % (self.__memory_dir, past_sibling_id)
+            if os.path.isfile(sibling_path):
+                content = self.load_json(sibling_path)
+                content['next_sibling'] = memory_id
+                self.save_json(sibling_path, content)
+
+        ## Stash the memory in the appropriate folder locally
+        def save_memory_locally(self, memory):
+            self.debug_message('saving memory locally...')
+            memory_id = memory['id']
+            memory_path = '%s/%s.json' % (self.__memory_dir, memory_id)
+            if not os.path.exists(self.__memory_dir):
+                os.mkdir(self.__memory_dir)
+            self.save_json(memory_path, memory)
+
+        ## Update all lower-depth memories with higher-depth memory id
+        def parent_local_child_memories(self, memory):
+            self.debug_message('Parenting child memories...')
+            memory_id = memory['id']
+            if self.__depth > 0 in memory:
+                child_ids = list(memory['lower_memory_ids'])
+                for id in child_ids:
+                    child_path = '%s/%s.json' % (self.__memory_dir, id)
+                    if os.path.isfile(child_path):
+                        content = self.load_json(child_path)
+                        content['episodic_parent_id'] = memory_id
+                        self.save_json(child_path, content)
+
+        def debug_message(self, message):
+            if self.debug_messages_enabled:
+                print(message)
+                    
 
     ## Return the number of memories of a given cache
     def get_cache_memory_count(self,depth):
@@ -255,6 +319,9 @@ class MemoryManager:
             "content_tokens":content_tokens,
             "summary": summary,
             "summary_tokens":int(summary_tokens),
+            "next_sibling":None,
+            "past_sibling":None,
+            "theme_links":[],
             "timestamp": timestamp,
             "timestring": timestring,
             "depth":int(depth)
@@ -280,6 +347,36 @@ class MemoryManager:
         summary_result = self.summarize_content(content, depth, content_tokens = content_tokens)
         summary = self.cleanup_response(summary_result)
         summary_tokens = self.get_token_estimate(summary)
+        
+        ## Extract the themes of this memory
+        themes = self.extract_themes(content)
+        theme_namespace = self.__config['memory_management']['theme_namespace_template']
+        theme_folderpath = self.__config['memory_management']['theme_stash_dir']
+
+        ## Create new theme links for all lower memories and add links to theme objects
+        theme_links = list()
+        for theme_id in themes:
+            theme_filepath = '%s/%s.json' % (theme_folderpath, theme_id)
+            theme_obj = self.load_json(theme_filepath)
+            theme_memory_ids = map(lambda l: l['memory_id'], theme_obj['links'])
+            for memory_id in memory_ids:
+                if memory_id not in theme_memory_ids:
+                    memory_link = self.generate_theme_link(theme_id, memory_id, (int(depth)-1))
+                    theme_links.append(memory_link)
+                    theme_obj['links'].append(memory_link)
+            self.save_json(theme_filepath, theme_obj)
+
+        ## Add theme links to lower memories
+        if len(theme_links) > 0:
+            memory_stash_folder = (self.__config['memory_management']['stash_folder_template'] % (int(depth)-1))
+            memory_folderpath = '%s/%s' % (self.__config['memory_management']['memory_stash_dir'], memory_stash_folder)
+            for memory_id in memory_ids:
+                memory_links = list(filter(lambda l: l['memory_id']==memory_id, theme_links))
+                if len(memory_links) > 0:
+                    memory_filepath = '%s/%s.json' % (memory_folderpath, memory_id)
+                    memory_obj = self.load_json(memory_filepath)
+                    memory_obj['theme_links'] += memory_links
+                    self.save_json(memory_filepath, memory_obj)
 
         ## Build episodic memory object
         episodic_memory = {
@@ -290,6 +387,9 @@ class MemoryManager:
             "summary_tokens":int(summary_tokens),
             "anticipation": "",
             "anticipation_tokens": "",
+            "next_sibling":None,
+            "past_sibling":None,
+            "theme_links":[],
             "timestamp": timestamp,
             "timestring": timestring,
             "depth": int(depth)
@@ -406,53 +506,183 @@ class MemoryManager:
 
     ## Save memory locally, update local child memories, and save memory vector to pinecone
     def index_memory(self, memory):
+        if not self.__pinecone_indexing_enabled:
+            return
         depth = int(memory['depth'])
         memory_id = memory['id']
         self.debug_message('indexing memory (%s)' % memory_id)
 
-        self.save_memory_locally(memory)
-        self.parent_local_child_memories(memory)
+        vector = self.gpt3_embedding(str(memory['summary']))
+        ## The metadata and namespace are redundant but I need the data split for later
+        metadata = {'memory_type': 'episodic', 'depth': str(depth)}
+        namespace = self.__config['memory_management']['memory_namespace_template'] % depth
+        self.save_vector_to_pinecone(vector, memory_id, metadata, namespace)
 
-        if self.__pinecone_indexing_enabled:
-            vector = self.gpt3_embedding(str(memory['summary']))
-            ## The metadata and namespace are redundant but I need the data split for later
-            metadata = {'memory_type': 'episodic', 'depth': str(depth)}
-            namespace = self.__config['memory_management']['memory_namespace_template'] % depth
-            self.save_vector_to_pinecone(vector, memory_id, metadata, namespace)
+#####################################################
+## THEMES ##
+## Theme objects are just an intuition I have about how these memories should be organized
+## Themes are extracted from episodic memory contents before they are summarized
+## Themes will be embedded
+##      If the embedding doesn't meet a query score falls under the threshold a new Theme object and pinecone vector will be created
+##      If the query score is over the query threshold then the Themes will merge with the pre-existing Theme object
+## Lower memories (depth of current memory - 1) are linked to the Theme via an ID on both entities
+## Later on, random memories will be selected from the Theme objects
+## New Theme elements will be extracted from the random sets and compared to their current Theme object.
+## The comparison will have one of three results:
+##      The new Themes match the Theme object the set was pulled from.
+##          The random memories' connection strength to the original Theme will be strengthened and all other connections will be weakened
+##      The new Themes match a different pre-existing Theme object.
+##          The random memories'connection strength to the original Theme and the new Theme will be strengthened
+##      The new Themes don't match any pre-existing Theme objects.
+##          The random memories'connection strength to the original Theme will be weakened
+## Each random memories selected will be disqualified for random selection for a period of time
+## This will replicate a reienforcement mechanism. Random selections will help extract memories with complex or multiple themes.
+
+    ## Get a list of themes from a summary of a memory and prepare the theme embedding objects
+    def extract_themes(self, content):
+        print('Extracting themes...')
+        extracted_themes = list()
+        ## Prompt for themes
+        themes_result = self.extract_content_themes(content)
+        ## Cleanup themes
+        themes, has_error = self.cleanup_theme_response(themes_result)
+        if has_error:
+            self.breakpoint('there was a thematic extraction error')
+            return extracted_themes
+        theme_namespace = self.__config['memory_management']['theme_namespace_template']
+        theme_folderpath = self.__config['memory_management']['theme_stash_dir']
+        theme_match_threshold = float(self.__config['memory_management']['theme_match_threshold'])
+        print('themes extracted...')
+        for theme in themes:
+            theme = str(theme)
+            vector = self.gpt3_embedding(theme)
+            theme_matches = self.query_pinecone(vector, 1, namespace=theme_namespace)
+            print('these are the theme matches:')
+            print(theme_matches)
+            if theme_matches is not None:
+                if len(theme_matches['matches']) > 0:
+                    ## There is a match so check the threshold
+                    match_score = float(theme_matches['matches'][0]['score'])
+                    print('the score for theme match {%s} was %s' % (theme, str(match_score)))
+                    if match_score >= theme_match_threshold:
+                        ## Theme score is above the threshold, update an existing theme
+                        existing_theme_id = theme_matches['matches'][0]['id']
+                        ## Load, update, and save theme
+                        theme_filepath = '%s/%s.json' % (theme_folderpath, existing_theme_id)
+                        existing_theme = self.load_json(theme_filepath)
+                        if theme not in existing_theme['themes']:
+                            existing_theme['themes'].append(theme)
+                            theme_string = ','.join(existing_theme['themes'])
+                            self.update_theme_vector(existing_theme_id, theme_string, theme_namespace)
+                            existing_theme['theme_count'] = len(existing_theme['themes'])
+                            self.save_json(theme_filepath, existing_theme)
+                        ## Add to extracted theme list
+                        if existing_theme_id not in extracted_themes:
+                            extracted_themes.append(existing_theme_id)
+                        continue
+            print('Making new themes')
+            ## The theme score falls under the threshold or there was no match, make a new theme
+            unique_id = str(uuid4())
+
+            
+            ## Add the theme to pinecone before making it so that similar themes in the current list can be merged
+            payload = [{'id': unique_id, 'values': vector}]
+            self.save_payload_to_pinecone(payload, theme_namespace)
+
+            ## Make theme and save it locally
+            new_theme = self.generate_theme(unique_id)
+            new_theme['themes'].append(theme)
+            new_theme['theme_count'] = 1
+            theme_filepath = '%s/%s.json' % (theme_folderpath, unique_id)
+            self.save_json(theme_filepath, new_theme)
+
+            ## Add to extracted theme list
+            extracted_themes.append(unique_id)
+
+        return extracted_themes
+
+    ## Get themes
+    def extract_content_themes(self, content):
+        prompt_name = 'memory_theme'
+        ## Load the prompt from a .json file
+        prompt_obj = self.load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
         
-        ## Cache the id to delete for testing.
-        with open('mem_wipe.txt', 'a', encoding='utf-8') as mem_wipe:
-            mem_wipe.write('%s\n' % str(memory_id))
+        temperature = prompt_obj['summary']['temperature']
+        response_tokens = prompt_obj['summary']['response_tokens']
 
-    ## Stash the memory in the appropriate folder locally
-    def save_memory_locally(self, memory):
-        self.debug_message('saving memory locally...')
-        depth = int(memory['depth'])
-        memory_id = memory['id']
-        ## Get the folder for this memory depth, make it if missing
-        memory_stash_folder = (self.__config['memory_management']['stash_folder_template'] % int(depth))
-        memory_dir = '%s/%s' % (self.__config['memory_management']['memory_stash_dir'], memory_stash_folder)
+        ## Generate memory element
+        prompt_content = prompt_obj['summary']['system_message'] % (content)
+        prompt = [self.compose_gpt_message(prompt_content,'user')]
+        response, tokens = self.gpt_completion(prompt, temperature, response_tokens)
+        return response
 
-        if not os.path.exists(memory_dir):
-            os.makedirs(memory_dir)
-        memory_path = '%s/%s.json' % (memory_dir, memory_id)
-        self.save_json(memory_path, memory)
+    ## Ensure the theme extraction has been cleaned up
+    def cleanup_theme_response(self, themes):
+        has_error = True
+        if type(themes) == list:
+                has_error = False
+                return themes, has_error
+        themes_obj = {}
+        try:
+            themes_obj = json.loads(themes)
+        except Exception as err:
+            print('ERROR: unable to parse the json object when extracting themes')
+            print('Value from GPT:\n\n%s' % themes)
+            self.breakpoint('\n\npausing...')
+            return [], has_error
 
-    ## Update all lower-depth memories with higher-depth memory id
-    def parent_local_child_memories(self, memory):
-        self.debug_message('Parenting child memories...')
-        depth = int(memory['depth'])
-        memory_id = memory['id']
-        if "lower_memory_ids" in memory:
-            child_ids = list(memory['lower_memory_ids'])
-            child_memory_dir = (self.__config['memory_management']['stash_folder_template'] % (int(depth)-1))
-            if os.path.exists(child_memory_dir):
-                for id in child_ids:
-                    child_path = '%s/%s.json' % (child_memory_dir,id)
-                    if os.path.isfile(child_path):
-                        content = load_json(child_path)
-                        content['episodic_parent_id'] = memory_id
-                        self.save_json(child_path, content)
+        dict_keys = list(themes_obj.keys())
+        if len(dict_keys) > 1:
+            print('ERROR: unknown response for theme extraction')
+            print('Value from GPT:\n\n%s' % themes)
+            print(themes_obj)
+            self.breakpoint('\n\npausing...')
+            return [], has_error
+        else:
+            key = dict_keys[0]
+            if type(themes_obj[key]) == list:
+                has_error = False
+                return themes_obj[key], has_error
+            else:
+                print('ERROR: unknown response for theme extraction')
+                print('Value from GPT:\n\n%s' % themes)
+                print(themes_obj)
+                self.breakpoint('\n\npausing...')
+                return [], has_error
+        return [], has_error
+
+    ## Load the theme, regenerate the embedding string, get embedding, and update the pinecone record
+    def update_theme_vector(self, theme_id, theme_string, namespace):
+        if not self.__pinecone_indexing_enabled:
+            return
+        vector = self.gpt3_embedding(theme_string)
+        update_response = self.__vector_db.update(id=theme_id,values=vector,namespace=namespace)
+
+    def generate_theme(self, theme_id):
+        timestamp = time()
+        timestring = self.timestamp_to_datetime(timestamp)
+        theme_obj = {
+            'id':theme_id,
+            'themes':[],
+            'theme_count':0,
+            'links':[],
+            'timestamp':timestamp,
+            'timestring':timestring,
+            'update_embedding':False
+        }
+        return theme_obj
+
+    def generate_theme_link(self, theme_id, memory_id, memory_depth):
+        link = {
+            'theme_id':theme_id,
+            'memory_id':memory_id,
+            'depth':int(memory_depth),
+            'weight':0.0,
+            'cooldown_count':0,
+            'repeat_theme_count':0
+        }
+        return link
+#####################################################
 
     ## Debug functions
     def breakpoint(self, message = '\n\nEnter to continue...'):
@@ -470,6 +700,13 @@ class MemoryManager:
             results = self.__vector_db.query(vector=vector, top_k=return_n)
         else:
             results = self.__vector_db.query(vector=vector, top_k=return_n, namespace=namespace)
+        return results
+
+    ## Seems like a useless function but I want this function to check for the config pinecone_indexing_enabled
+    def save_payload_to_pinecone(self,payload, namespace):
+        if not self.__pinecone_indexing_enabled:
+            return
+        self.__vector_db.upsert(payload, namespace=namespace)
 
     #### Save vector to pinecone
     def save_vector_to_pinecone(self, vector, unique_id, metadata, namespace=""):
