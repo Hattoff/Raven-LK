@@ -2,15 +2,10 @@ import configparser
 import os
 import json
 import glob
-from time import time,sleep
 import datetime
 from uuid import uuid4
-import pinecone
-import tiktoken
 import re
-
-## NOTE:Likely will move the OpenAi stuff later, not sure.
-import openai
+from UtilityFunctions import *
 
 ##### NOTE: Token counts should leave enough room for a variety of prompt instructions, since their use may vary. I am thinking of leaving a buffer of 1000 to ensure there is enough room, but I will generalize it so adjustments can be made easily
 
@@ -19,19 +14,13 @@ import openai
 ## When a new message is added the memory manager will assess when memory compression should occur.
 class MemoryManager:
     def __init__(self):
-        self.__config = configparser.ConfigParser()
-        self.__config.read('config.ini')
+        self.__config = get_config()
         self.__cache_token_limit = int(self.__config['memory_management']['cache_token_limit'])
         self.__max_tokens = int(self.__config['open_ai']['max_token_input'])
         self.__episodic_memory_caches = [] # index will represent memory depth, useful for dynamic memory expansion
         self.__max_episodic_depth = 2 # will restrict memory expansion. 0 is unlimited depth.
         self.__pinecone_indexing_enabled = self.__config.getboolean('pinecone', 'pinecone_indexing_enabled')
         self.debug_messages_enabled = True
-        
-        openai.api_key = self.open_file(self.__config['open_ai']['api_key'])
-        if self.__pinecone_indexing_enabled:
-            pinecone.init(api_key=self.open_file(self.__config['pinecone']['api_key']), environment=self.__config['pinecone']['environment'])
-            self.__vector_db = pinecone.Index(self.__config['pinecone']['index'])
 
         ## When initialized, attempt to load cached state, otherwise make a new state
         if not (self.load_state()):
@@ -104,8 +93,8 @@ class MemoryManager:
         ## Return a JSON version of this object to save
         @property
         def cache(self):
-            timestamp = time()
-            timestring = (datetime.datetime.fromtimestamp(timestamp).strftime("%A, %B %d, %Y at %I:%M:%S%p %Z")).strip()
+            timestamp = get_time()
+            timestring = timestamp_to_datetime(timestamp)
             cache = {
                 "id":self.__id,
                 "depth":self.__depth,
@@ -154,55 +143,35 @@ class MemoryManager:
             self.__token_count = 0
             self.__id = str(uuid4())
 
-        def open_file(self, filepath):
-            with open(filepath, 'r', encoding='utf-8') as infile:
-                return infile.read()
-
-        def save_file(self, filepath, content):
-            with open(filepath, 'w', encoding='utf-8') as outfile:
-                outfile.write(content)
-
-        def load_json(self, filepath):
-            with open(filepath, 'r', encoding='utf-8') as infile:
-                return json.load(infile)
-
-        def save_json(self, filepath, payload):
-            with open(filepath, 'w', encoding='utf-8') as outfile:
-                json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
-
         ## Add memory id to past sibling's 'next_sibling' id
         def update_past_sibling(self, memory_id, past_sibling_id):
             sibling_path = '%s/%s.json' % (self.__memory_dir, past_sibling_id)
             if os.path.isfile(sibling_path):
-                content = self.load_json(sibling_path)
+                content = load_json(sibling_path)
                 content['next_sibling'] = memory_id
-                self.save_json(sibling_path, content)
+                save_json(sibling_path, content)
 
         ## Stash the memory in the appropriate folder locally
         def save_memory_locally(self, memory):
-            self.debug_message('saving memory locally...')
+            debug_message('saving memory locally...', self.debug_messages_enabled)
             memory_id = memory['id']
             memory_path = '%s/%s.json' % (self.__memory_dir, memory_id)
             if not os.path.exists(self.__memory_dir):
                 os.mkdir(self.__memory_dir)
-            self.save_json(memory_path, memory)
+            save_json(memory_path, memory)
 
         ## Update all lower-depth memories with higher-depth memory id
         def parent_local_child_memories(self, memory):
-            self.debug_message('Parenting child memories...')
+            debug_message('Parenting child memories...', self.debug_messages_enabled)
             memory_id = memory['id']
             if self.__depth > 0 in memory:
                 child_ids = list(memory['lower_memory_ids'])
                 for id in child_ids:
                     child_path = '%s/%s.json' % (self.__memory_dir, id)
                     if os.path.isfile(child_path):
-                        content = self.load_json(child_path)
+                        content = load_json(child_path)
                         content['episodic_parent_id'] = memory_id
-                        self.save_json(child_path, content)
-
-        def debug_message(self, message):
-            if self.debug_messages_enabled:
-                print(message)
+                        save_json(child_path, content)
                     
 
     ## Return the number of memories of a given cache
@@ -231,12 +200,12 @@ class MemoryManager:
 
         # there were no state backups so make and implement a new one
         if len(list(files)) <= 0:
-            self.debug_message("no state backups found...")
+            debug_message("no state backups found...", self.debug_messages_enabled)
             return False
 
-        self.debug_message("state backups loaded...")
+        debug_message("state backups loaded...", self.debug_messages_enabled)
         state_path = list(files)[0].replace('\\','/')
-        state = self.load_json(state_path)
+        state = load_json(state_path)
 
         for cache in state['memory_caches']:
             depth = cache['depth']
@@ -256,8 +225,8 @@ class MemoryManager:
 
     def save_state(self):
         ## TODO: Restrict backups to max_backup_states
-        timestamp = time()
-        timestring = self.timestamp_to_datetime(timestamp)
+        timestamp = get_time()
+        timestring = timestamp_to_datetime(timestamp)
         unique_id = str(uuid4())
 
         memory_caches = list()
@@ -273,42 +242,23 @@ class MemoryManager:
 
         filename = ('%s_memory_state_%s.json' %(str(timestamp),unique_id))
         filepath = ('%s/%s' % (self.__config['memory_management']['memory_state_dir'], filename))
-        self.save_json(filepath, state)
-        self.debug_message('State saved...')
-
-    def timestamp_to_datetime(self, unix_time):
-        return (datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M:%S%p %Z")).strip()
-
-    def open_file(self, filepath):
-        with open(filepath, 'r', encoding='utf-8') as infile:
-            return infile.read()
-
-    def save_file(self, filepath, content):
-        with open(filepath, 'w', encoding='utf-8') as outfile:
-            outfile.write(content)
-
-    def load_json(self, filepath):
-        with open(filepath, 'r', encoding='utf-8') as infile:
-            return json.load(infile)
-
-    def save_json(self, filepath, payload):
-        with open(filepath, 'w', encoding='utf-8') as outfile:
-            json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
+        save_json(filepath, state)
+        debug_message('State saved...', self.debug_messages_enabled)
 
     ## Assemble and index eidetic memories from a message by a speaker
     ## Eidetic memory is the base form of all episodic memory
     def generate_eidetic_memory(self, speaker, content):
-        timestamp = time()
-        self.debug_message('Generating eidetic memory...')
+        timestamp = get_time()
+        debug_message('Generating eidetic memory...', self.debug_messages_enabled)
         unique_id = str(uuid4())
-        timestring = self.timestamp_to_datetime(timestamp)
+        timestring = timestamp_to_datetime(timestamp)
         depth = 0
 
-        content_tokens = self.get_token_estimate(content)
+        content_tokens = get_token_estimate(content)
 
         summary_result = self.summarize_content('%s: %s' % (speaker, content), depth, speaker, content_tokens = content_tokens)
         summary = self.cleanup_response(summary_result)
-        summary_tokens = self.get_token_estimate(summary)
+        summary_tokens = get_token_estimate(summary)
 
         ## Build episodic memory object
         eidetic_memory = {
@@ -330,10 +280,10 @@ class MemoryManager:
 
     ## Assemble an eposodic memory from a collection of eidetic or lower-depth episodic memories
     def generate_episodic_memory(self, memories, depth):
-        timestamp = time()
-        self.debug_message('Generating episodic memory of cache depth (%s)...' % str(depth))
+        timestamp = get_time()
+        debug_message('Generating episodic memory of cache depth (%s)...' % str(depth), self.debug_messages_enabled)
         unique_id = str(uuid4())
-        timestring = self.timestamp_to_datetime(timestamp)
+        timestring = timestamp_to_datetime(timestamp)
 
         ## Append all summaries together, get a token total, and get a list of memory ids
         content = ''
@@ -346,7 +296,7 @@ class MemoryManager:
 
         summary_result = self.summarize_content(content, depth, content_tokens = content_tokens)
         summary = self.cleanup_response(summary_result)
-        summary_tokens = self.get_token_estimate(summary)
+        summary_tokens = get_token_estimate(summary)
         
         ## Extract the themes of this memory
         themes = self.extract_themes(content)
@@ -357,14 +307,14 @@ class MemoryManager:
         theme_links = list()
         for theme_id in themes:
             theme_filepath = '%s/%s.json' % (theme_folderpath, theme_id)
-            theme_obj = self.load_json(theme_filepath)
+            theme_obj = load_json(theme_filepath)
             theme_memory_ids = map(lambda l: l['memory_id'], theme_obj['links'])
             for memory_id in memory_ids:
                 if memory_id not in theme_memory_ids:
                     memory_link = self.generate_theme_link(theme_id, memory_id, (int(depth)-1))
                     theme_links.append(memory_link)
                     theme_obj['links'].append(memory_link)
-            self.save_json(theme_filepath, theme_obj)
+            save_json(theme_filepath, theme_obj)
 
         ## Add theme links to lower memories
         if len(theme_links) > 0:
@@ -374,9 +324,9 @@ class MemoryManager:
                 memory_links = list(filter(lambda l: l['memory_id']==memory_id, theme_links))
                 if len(memory_links) > 0:
                     memory_filepath = '%s/%s.json' % (memory_folderpath, memory_id)
-                    memory_obj = self.load_json(memory_filepath)
+                    memory_obj = load_json(memory_filepath)
                     memory_obj['theme_links'] += memory_links
-                    self.save_json(memory_filepath, memory_obj)
+                    save_json(memory_filepath, memory_obj)
 
         ## Build episodic memory object
         episodic_memory = {
@@ -406,18 +356,18 @@ class MemoryManager:
     ## Caching memories may cascade and compress higher depth caches
     ## Check to see if cache as room, if so then add memory, otherwise compress that cache before adding
     def cache_memory(self, memory, tokens, depth):
-        self.debug_message('adding memory to cache (%s)' % str(depth))
+        debug_message('adding memory to cache (%s)' % str(depth), self.debug_messages_enabled)
         if self.__episodic_memory_caches[int(depth)].has_memory_space(tokens):
-            self.debug_message('There is enough space in the cache...')
+            debug_message('There is enough space in the cache...', self.debug_messages_enabled)
             self.__episodic_memory_caches[int(depth)].add_memory(memory, tokens)
         else:
-            self.debug_message('There is not enough space in the cache (%s), compressing...' % str(depth))    
+            debug_message('There is not enough space in the cache (%s), compressing...' % str(depth), self.debug_messages_enabled)    
             self.compress_memory_cache(depth)
-            self.debug_message('Flushing cache of depth (%s)...' % str(depth))
+            debug_message('Flushing cache of depth (%s)...' % str(depth), self.debug_messages_enabled)
             self.__episodic_memory_caches[int(depth)].flush_memory_cache()
             # Add the new message to the recently flushed memory cache
             self.__episodic_memory_caches[int(depth)].add_memory(memory, tokens)
-        self.debug_message('Saving state...')
+        debug_message('Saving state...', self.debug_messages_enabled)
         self.index_memory(memory)
         self.save_state()
 
@@ -426,19 +376,19 @@ class MemoryManager:
         episodic_tokens = 0
         depth = 0
         memory, tokens = self.generate_eidetic_memory(speaker, content)
-        self.debug_message('adding memory to cache (%s)' % str(depth))
+        debug_message('adding memory to cache (%s)' % str(depth), self.debug_messages_enabled)
         if self.__episodic_memory_caches[depth].has_memory_space(tokens):
-            self.debug_message('There is enough space in the cache...')
+            debug_message('There is enough space in the cache...', self.debug_messages_enabled)
             self.__episodic_memory_caches[depth].add_memory(memory, tokens)
         else:
-            self.debug_message('There is not enough space in the cache, compressing...')    
+            debug_message('There is not enough space in the cache, compressing...', self.debug_messages_enabled)    
             episodic_memory, episodic_tokens = self.compress_memory_cache(depth)
             self.__episodic_memory_caches[depth].flush_memory_cache()
             self.__episodic_memory_caches[depth].add_memory(memory, tokens)
         
         self.index_memory(memory)
         if speaker == 'RAVEN':
-            self.debug_message('Saving state...')
+            debug_message('Saving state...', self.debug_messages_enabled)
             self.save_state()
         return memory, tokens, episodic_memory, episodic_tokens
 
@@ -447,20 +397,20 @@ class MemoryManager:
     ## Need to account for this by passing a list down the line, then let the conversation manager
     ## decide how to utilize the returned memories. will figure that out when I am less drunk.
     def compress_memory_cache(self, depth):
-        self.debug_message('Compressing cache of depth (%s)...' % str(depth))
+        debug_message('Compressing cache of depth (%s)...' % str(depth), self.debug_messages_enabled)
         ## Get a copy of the cached memories
         memories = self.__episodic_memory_caches[int(depth)].memories
         ## Ensure the memory cache current memory ids transfer to the previous memory ids list
         self.__episodic_memory_caches[int(depth)].transfer_memory_ids()
 
 
-        self.debug_message('Pushing compressed memory to cache of depth (%s)...' % str(int(depth)+1))
+        debug_message('Pushing compressed memory to cache of depth (%s)...' % str(int(depth)+1), self.debug_messages_enabled)
         ## Generate a higher depth memory
         episodic_memory, episodic_tokens = self.generate_episodic_memory(memories, int(depth)+1)
 
         ## Add the new memory to the cache
         self.cache_memory(episodic_memory, episodic_tokens, int(depth)+1)
-        self.debug_message('Flushing cache of depth (%s)...' % str(depth))
+        debug_message('Flushing cache of depth (%s)...' % str(depth), self.debug_messages_enabled)
         self.__episodic_memory_caches[int(depth)].flush_memory_cache()
         return episodic_memory, episodic_tokens
 
@@ -475,7 +425,7 @@ class MemoryManager:
             prompt_name = 'episodic_to_episodic_memory'
 
         ## Load the prompt from a .json file
-        prompt_obj = self.load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
+        prompt_obj = load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
         
         ## Sum the token count for the content with the intended prompt token count
         response_tokens = int(prompt_obj['summary']['response_tokens']) + int(content_tokens)
@@ -490,7 +440,7 @@ class MemoryManager:
         else:
             prompt_content = prompt_obj['summary']['system_message'] % content
         messages.append(self.compose_gpt_message(prompt_content,'user'))
-        memory_element, total_tokens = self.gpt_completion(messages, temperature, response_tokens)
+        memory_element, total_tokens = gpt_completion(messages, temperature, response_tokens)
         return memory_element
 
     ## The role can be either system or user. If the role is system then you are either giving the model instructions/personas or example prompts.
@@ -510,13 +460,13 @@ class MemoryManager:
             return
         depth = int(memory['depth'])
         memory_id = memory['id']
-        self.debug_message('indexing memory (%s)' % memory_id)
+        debug_message('indexing memory (%s)' % memory_id, self.debug_messages_enabled)
 
-        vector = self.gpt3_embedding(str(memory['summary']))
+        vector = gpt3_embedding(str(memory['summary']))
         ## The metadata and namespace are redundant but I need the data split for later
         metadata = {'memory_type': 'episodic', 'depth': str(depth)}
         namespace = self.__config['memory_management']['memory_namespace_template'] % depth
-        self.save_vector_to_pinecone(vector, memory_id, metadata, namespace)
+        save_vector_to_pinecone(vector, memory_id, metadata, namespace)
 
 #####################################################
 ## THEMES ##
@@ -547,7 +497,7 @@ class MemoryManager:
         ## Cleanup themes
         themes, has_error = self.cleanup_theme_response(themes_result)
         if has_error:
-            self.breakpoint('there was a thematic extraction error')
+            breakpoint('there was a thematic extraction error')
             return extracted_themes
         theme_namespace = self.__config['memory_management']['theme_namespace_template']
         theme_folderpath = self.__config['memory_management']['theme_stash_dir']
@@ -555,8 +505,8 @@ class MemoryManager:
         print('themes extracted...')
         for theme in themes:
             theme = str(theme)
-            vector = self.gpt3_embedding(theme)
-            theme_matches = self.query_pinecone(vector, 1, namespace=theme_namespace)
+            vector = gpt3_embedding(theme)
+            theme_matches = query_pinecone(vector, 1, namespace=theme_namespace)
             print('these are the theme matches:')
             print(theme_matches)
             if theme_matches is not None:
@@ -569,13 +519,13 @@ class MemoryManager:
                         existing_theme_id = theme_matches['matches'][0]['id']
                         ## Load, update, and save theme
                         theme_filepath = '%s/%s.json' % (theme_folderpath, existing_theme_id)
-                        existing_theme = self.load_json(theme_filepath)
+                        existing_theme = load_json(theme_filepath)
                         if theme not in existing_theme['themes']:
                             existing_theme['themes'].append(theme)
                             theme_string = ','.join(existing_theme['themes'])
                             self.update_theme_vector(existing_theme_id, theme_string, theme_namespace)
                             existing_theme['theme_count'] = len(existing_theme['themes'])
-                            self.save_json(theme_filepath, existing_theme)
+                            save_json(theme_filepath, existing_theme)
                         ## Add to extracted theme list
                         if existing_theme_id not in extracted_themes:
                             extracted_themes.append(existing_theme_id)
@@ -587,14 +537,14 @@ class MemoryManager:
             
             ## Add the theme to pinecone before making it so that similar themes in the current list can be merged
             payload = [{'id': unique_id, 'values': vector}]
-            self.save_payload_to_pinecone(payload, theme_namespace)
+            save_payload_to_pinecone(payload, theme_namespace)
 
             ## Make theme and save it locally
             new_theme = self.generate_theme(unique_id)
             new_theme['themes'].append(theme)
             new_theme['theme_count'] = 1
             theme_filepath = '%s/%s.json' % (theme_folderpath, unique_id)
-            self.save_json(theme_filepath, new_theme)
+            save_json(theme_filepath, new_theme)
 
             ## Add to extracted theme list
             extracted_themes.append(unique_id)
@@ -605,7 +555,7 @@ class MemoryManager:
     def extract_content_themes(self, content):
         prompt_name = 'memory_theme'
         ## Load the prompt from a .json file
-        prompt_obj = self.load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
+        prompt_obj = load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
         
         temperature = prompt_obj['summary']['temperature']
         response_tokens = prompt_obj['summary']['response_tokens']
@@ -613,7 +563,7 @@ class MemoryManager:
         ## Generate memory element
         prompt_content = prompt_obj['summary']['system_message'] % (content)
         prompt = [self.compose_gpt_message(prompt_content,'user')]
-        response, tokens = self.gpt_completion(prompt, temperature, response_tokens)
+        response, tokens = gpt_completion(prompt, temperature, response_tokens)
         return response
 
     ## Ensure the theme extraction has been cleaned up
@@ -628,7 +578,7 @@ class MemoryManager:
         except Exception as err:
             print('ERROR: unable to parse the json object when extracting themes')
             print('Value from GPT:\n\n%s' % themes)
-            self.breakpoint('\n\npausing...')
+            breakpoint('\n\npausing...')
             return [], has_error
 
         dict_keys = list(themes_obj.keys())
@@ -636,7 +586,7 @@ class MemoryManager:
             print('ERROR: unknown response for theme extraction')
             print('Value from GPT:\n\n%s' % themes)
             print(themes_obj)
-            self.breakpoint('\n\npausing...')
+            breakpoint('\n\npausing...')
             return [], has_error
         else:
             key = dict_keys[0]
@@ -647,7 +597,7 @@ class MemoryManager:
                 print('ERROR: unknown response for theme extraction')
                 print('Value from GPT:\n\n%s' % themes)
                 print(themes_obj)
-                self.breakpoint('\n\npausing...')
+                breakpoint('\n\npausing...')
                 return [], has_error
         return [], has_error
 
@@ -655,12 +605,12 @@ class MemoryManager:
     def update_theme_vector(self, theme_id, theme_string, namespace):
         if not self.__pinecone_indexing_enabled:
             return
-        vector = self.gpt3_embedding(theme_string)
-        update_response = self.__vector_db.update(id=theme_id,values=vector,namespace=namespace)
+        vector = gpt3_embedding(theme_string)
+        update_response = update_pinecone_vector(theme_id, vector, namespace)
 
     def generate_theme(self, theme_id):
-        timestamp = time()
-        timestring = self.timestamp_to_datetime(timestamp)
+        timestamp = get_time()
+        timestring = timestamp_to_datetime(timestamp)
         theme_obj = {
             'id':theme_id,
             'themes':[],
@@ -682,99 +632,3 @@ class MemoryManager:
             'repeat_theme_count':0
         }
         return link
-#####################################################
-
-    ## Debug functions
-    def breakpoint(self, message = '\n\nEnter to continue...'):
-        input(message+'\n')
-    
-    def debug_message(self, message):
-        if self.debug_messages_enabled:
-            print(message)
-
-######################################################
-## Pinecone stuff... might move later...
-#### Query pinecone with vector. If search_all = True then name_space will be ignored.
-    def query_pinecone(self, vector, return_n, namespace = "", search_all = False):
-        if search_all:
-            results = self.__vector_db.query(vector=vector, top_k=return_n)
-        else:
-            results = self.__vector_db.query(vector=vector, top_k=return_n, namespace=namespace)
-        return results
-
-    ## Seems like a useless function but I want this function to check for the config pinecone_indexing_enabled
-    def save_payload_to_pinecone(self,payload, namespace):
-        if not self.__pinecone_indexing_enabled:
-            return
-        self.__vector_db.upsert(payload, namespace=namespace)
-
-    #### Save vector to pinecone
-    def save_vector_to_pinecone(self, vector, unique_id, metadata, namespace=""):
-        if not self.__pinecone_indexing_enabled:
-            return
-        self.debug_message('Saving vector to pinecone.')
-        payload_content = {'id': unique_id, 'values': vector, 'metadata': metadata}
-        payload = list()
-        payload.append(payload_content)
-        self.__vector_db.upsert(payload, namespace=namespace)
-
-    def update_vector(self, vector, unique_id, metadata, namespace=""):
-        ## TODO: figure out how to update existing vectors.
-        ## This will be used when memories are retconned.
-        return unique_id
-
-######################################################
-## Open AI stuff... might move later...
-
-    def gpt3_embedding(self, content):
-        engine = self.__config['open_ai']['input_engine']
-        content = content.encode(encoding='ASCII',errors='ignore').decode()  # fix any UNICODE errors
-        response = openai.Embedding.create(input=content,engine=engine)
-        vector = response['data'][0]['embedding']  # this is a normal list
-        return vector
-
-    def gpt_completion(self, messages, temp=0.0, tokens=400, stop=['USER:', 'RAVEN:']):
-        engine = self.__config['open_ai']['model']
-        top_p=1.0
-        freq_pen=0.0
-        pres_pen=0.0
-
-        max_retry = 5
-        retry = 0
-        while True:
-            try:
-                response = openai.ChatCompletion.create(
-                    model=engine,
-                    messages=messages,
-                    temperature=temp,
-                    max_tokens=tokens,
-                    top_p=top_p,
-                    frequency_penalty=freq_pen,
-                    presence_penalty=pres_pen,
-                    stop=stop)
-                response_id = str(response['id'])
-                prompt_tokens = int(response['usage']['prompt_tokens'])
-                completion_tokens = int(response['usage']['completion_tokens'])
-                total_tokens = int(response['usage']['total_tokens'])
-                response_str = response['choices'][0]['message']['content'].strip()
-                return response_str, total_tokens
-            except Exception as oops:
-                retry += 1
-                if retry >= max_retry:
-                    return "GPT3.5 error: %s" % oops, -1
-                print('Error communicating with OpenAI:', oops)
-                sleep(2)
-
-    def print_response_stats(self, response):
-        response_id = ('\nResponse %s' % str(response['id']))
-        prompt_tokens = ('\nPrompt Tokens: %s' % (str(response['usage']['prompt_tokens'])))
-        completion_tokens = ('\nCompletion Tokens: %s' % str(response['usage']['completion_tokens']))
-        total_tokens = ('\nTotal Tokens: %s\n' % (str(response['usage']['total_tokens'])))
-        print(response_id + prompt_tokens + completion_tokens + total_tokens)
-
-    def get_token_estimate(self, content):
-        content = content.encode(encoding='ASCII',errors='ignore').decode()  # fix any UNICODE errors
-        encoding = tiktoken.encoding_for_model(str(self.__config['open_ai']['model']))
-        tokens = encoding.encode(content)
-        token_count = len(tokens)
-        return token_count

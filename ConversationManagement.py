@@ -8,17 +8,15 @@ from uuid import uuid4
 import openai
 import tiktoken
 import re
+from UtilityFunctions import *
 from MemoryManagement import MemoryManager
 
 class ConversationManager:
     def __init__(self):
-        self.__config = configparser.ConfigParser()
-        self.__config.read('config.ini')
+        self.__config = get_config()
         self.__memory_manager = MemoryManager()
         self.__eidetic_memory_log = self.MemoryLog(500,4)
         self.__episodic_memory_log = self.MemoryLog(500,4)
-        
-        openai.api_key = self.open_file(self.__config['open_ai']['api_key'])
 
         self.make_required_directories()
 
@@ -141,7 +139,7 @@ class ConversationManager:
                 for mem_id in memories_to_reload:
                     memory_path = '%s/%s.json' % (memory_file_path, mem_id)
                     try:
-                        memory = self.load_json(memory_path)
+                        memory = load_json(memory_path)
                         reloaded_memories.append(memory)
                     except Exception as err:
                         print('ERROR: unable to load memory %s.json from %s' % (mem_id, memory_path))
@@ -186,7 +184,7 @@ class ConversationManager:
             self.__episodic_memory_log.add(episodic_memory, episodic_tokens)
     
     def generate_response(self):
-        prompt_obj = self.load_json('%s/%s.json' % (self.__config['conversation_management']['conversation_management_dir'], 'conversation_prompt'))
+        prompt_obj = load_json('%s/%s.json' % (self.__config['conversation_management']['conversation_management_dir'], 'conversation_prompt'))
 
         notes_body = self.__episodic_memory_log.memory_string
         conversation_body = self.__eidetic_memory_log.memory_string
@@ -214,16 +212,16 @@ class ConversationManager:
         conversation_stash_dir = self.__config['conversation_management']['conversation_stash_dir']
         ## Save prompt for debug
         prompt_path = '%s/%s_prompt.txt' % (conversation_stash_dir, timestring)
-        self.save_file(prompt_path, prompt)
+        save_file(prompt_path, prompt)
 
         gpt_messages = list()
         gpt_messages.append(self.compose_gpt_message(prompt, 'user'))
 
-        response, tokens = self.gpt_completion(gpt_messages, temperature, response_tokens)
+        response, tokens = gpt_completion(gpt_messages, temperature, response_tokens)
 
         ## Save response for debug
         response_path = '%s/%s_response.txt' % (conversation_stash_dir, timestring)
-        self.save_file(response_path, response)
+        save_file(response_path, response)
 
         return response
 
@@ -247,33 +245,17 @@ class ConversationManager:
         anticipation_stash_dir = self.__config['conversation_management']['anticipation_stash_dir']
         ## Save prompt for debug
         prompt_path = '%s/%s_prompt.txt' % (anticipation_stash_dir, timestring)
-        self.save_file(prompt_path, prompt)
+        save_file(prompt_path, prompt)
 
         gpt_messages = list()
         gpt_messages.append(self.compose_gpt_message(prompt, 'user'))
-        response, tokens = self.gpt_completion(gpt_messages, temperature, response_tokens)
+        response, tokens = gpt_completion(gpt_messages, temperature, response_tokens)
 
         ## Save response for debug
         response_path = '%s/%s_response.txt' % (anticipation_stash_dir, timestring)
-        self.save_file(response_path, response)
+        save_file(response_path, response)
 
         return response
-        
-    def save_file(self, filepath, content):
-        with open(filepath, 'w', encoding='utf-8') as outfile:
-            outfile.write(content)
-
-    def open_file(self, filepath):
-        with open(filepath, 'r', encoding='utf-8') as infile:
-            return infile.read()
-
-    def load_json(self, filepath):
-        with open(filepath, 'r', encoding='utf-8') as infile:
-            return json.load(infile)
-
-    def save_json(self, filepath, payload):
-        with open(filepath, 'w', encoding='utf-8') as outfile:
-            json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
 
     def compose_gpt_message(self, content, role, name=''):
         if name == '':
@@ -281,60 +263,3 @@ class ConversationManager:
         else:
             role = 'system'
             return {"role":role,"name":name,"content": content}
-
-    def gpt3_embedding(self, content):
-        engine = self.__config['open_ai']['input_engine']
-        content = content.encode(encoding='ASCII',errors='ignore').decode()  # fix any UNICODE errors
-        response = openai.Embedding.create(input=content,engine=engine)
-        vector = response['data'][0]['embedding']  # this is a normal list
-        return vector
-
-    def gpt_completion(self, messages, temp=0.0, tokens=400, stop=['USER:', 'RAVEN:']):
-        engine = self.__config['open_ai']['model']
-        top_p=1.0
-        freq_pen=0.0
-        pres_pen=0.0
-
-        max_retry = 5
-        retry = 1
-        while True:
-            try:
-                response = openai.ChatCompletion.create(
-                    model=engine,
-                    messages=messages,
-                    temperature=temp,
-                    max_tokens=tokens,
-                    top_p=top_p,
-                    frequency_penalty=freq_pen,
-                    presence_penalty=pres_pen,
-                    stop=stop)
-
-                response_id = str(response['id'])
-                prompt_tokens = int(response['usage']['prompt_tokens'])
-                completion_tokens = int(response['usage']['completion_tokens'])
-                total_tokens = int(response['usage']['total_tokens'])
-                response_text = response['choices'][0]['message']['content'].strip()
-                response_text = re.sub('[\r\n]+', '\n', response_text)
-                response_text = re.sub('[\t ]+', ' ', response_text)
-                return response_text, total_tokens
-            except Exception as oops:
-                retry += 1
-                if retry >= max_retry:
-                    return "GPT3.5 error: %s" % oops, -1
-                print('Error communicating with OpenAI:', oops)
-                print('Retrying in %s...'%str(10*retry))
-                sleep(10*retry)
-
-    def print_response_stats(self, response):
-        response_id = ('\nResponse %s' % str(response['id']))
-        prompt_tokens = ('\nPrompt Tokens: %s' % (str(response['usage']['prompt_tokens'])))
-        completion_tokens = ('\nCompletion Tokens: %s' % str(response['usage']['completion_tokens']))
-        total_tokens = ('\nTotal Tokens: %s\n' % (str(response['usage']['total_tokens'])))
-        print(response_id + prompt_tokens + completion_tokens + total_tokens)
-
-    def get_token_estimate(self, content):
-        content = content.encode(encoding='ASCII',errors='ignore').decode()  # fix any UNICODE errors
-        encoding = tiktoken.encoding_for_model(str(self.__config['open_ai']['model']))
-        tokens = encoding.encode(content)
-        token_count = len(tokens)
-        return token_count

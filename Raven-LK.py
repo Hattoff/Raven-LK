@@ -98,7 +98,7 @@ def snap_window_to_cursor(window_width = 400, window_height = 400):
 
     # Calculate the new position of the window
     window_x = cursor_x - (window_width // 2)
-    window_y = cursor_y - (window_height // 2)
+    window_y = cursor_y - 20
 
     global _window_width
     global _window_height
