@@ -48,9 +48,6 @@ def reload_config():
     config = configparser.ConfigParser()
     config.read('config.ini')
 
-def get_time():
-    return time()
-
 def timestamp_to_datetime(unix_time):
     return (datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M:%S%p %Z")).strip()
 

@@ -1,5 +1,0 @@
-I will compare the summaries original and retconned. I will identify difference between them and compress that information as much as possible so that all key elements are represented in as little comprehensible text possible. I will rate the difference with a number from 0 to 1. If the difference is minor I will choose a number closer to 0. If the difference is major I will choose a number closer to 1. I will format my response like this:
-{
-	"rating":"",
-	"differences":""
-}

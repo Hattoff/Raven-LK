@@ -13,6 +13,7 @@ conversation_manager = ConversationManager()
 _full_height = False
 _window_width = 600
 _window_height = 600
+show_right_frame = False
 
 ####### TKINTER functions by GPT4 prompted by David Shapiro(daveshap); modified by Matt Hatton(hattoff)
 ####### https://github.com/daveshap/Chapter_Summarizer_GPT4/blob/main/chat_tkinter2.py
@@ -223,15 +224,21 @@ if __name__ == "__main__":
     root = tk.Tk()
     root.title("Raven-LK")
 
-    main_frame = ttk.Frame(root, padding="10")
+    main_frame = ttk.Frame(root, padding="5")
     main_frame.grid(column=0, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
+    right_frame = ttk.Frame(root, padding="5")
+    right_frame.grid(column=1, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+    # root.columnconfigure(0, weight=1)
     root.columnconfigure(0, weight=1)
+    root.columnconfigure(1, weight=0)
     root.rowconfigure(0, weight=1)
 
     main_frame.columnconfigure(0, weight=1)
     main_frame.rowconfigure(0, weight=1)
 
+    ## Primary chat log
     chat_text = tk.Text(main_frame, wrap=tk.WORD, width=60, height=20, bg='#333333')
     chat_text.grid(column=0, row=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
     chat_text.tag_configure('user', background='#444654', wrap='word', justify='right',foreground="white", font=("Calibri", 12))
@@ -240,16 +247,21 @@ if __name__ == "__main__":
     chat_text.tag_configure('raven-summary', background='#343541', wrap='word', justify='left', font=("Calibri", 12, "italic"),foreground="white")
     chat_text.tag_configure('system', justify='center', foreground="white", font=("Calibri", 14, "bold"))
 
+    ## Secondary log I intend to use for debugging messages, but I am unsure if they will work with async function calls.
+    right_chat_text = tk.Text(right_frame, wrap=tk.WORD, width=60, height=35, bg='#333333')
+    right_chat_text.grid(column=0, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+    right_chat_text.tag_configure('user', background='#444654', wrap='word', justify='right',foreground="white", font=("Calibri", 12))
+
     send_button = ttk.Button(main_frame, text="Send", command=send_message)
-    send_button.grid(column=1, row=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+    send_button.grid(column=0, row=2,columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
 
     ai_status = tk.StringVar()
     ai_status_label = ttk.Label(main_frame, textvariable=ai_status)
     ai_status_label.grid(column=2, row=1, sticky=(tk.W, tk.E, tk.N, tk.S))
 
     # Initialize the text box
-    user_entry = tk.Text(main_frame, width=50, height=5, wrap="word", font=("Calibri", 12))
-    user_entry.grid(column=0, row=1, sticky=(tk.W, tk.E))
+    user_entry = tk.Text(main_frame, width=50, height=5, wrap="word", background='#D3D3D3', font=("Calibri", 12))
+    user_entry.grid(column=0, row=1,columnspan=3, sticky=(tk.W, tk.E))
     # Initialize the spell checker
     spell = SpellChecker()
 
@@ -268,5 +280,29 @@ if __name__ == "__main__":
     load_conversation(10)
     chat_text.config(state='disabled')
 
-    snap_window_to_cursor(600, 600)
+    snap_window_to_cursor(800, 600)
+
+    # Create a BooleanVar to control the visibility of the right_frame
+    # show_right_frame = tk.BooleanVar(value=False)
+
+    right_frame.grid_forget()
+
+    def toggle_right_frame():
+        global show_right_frame
+        show_right_frame = not show_right_frame
+        right_frame.grid_forget() if not show_right_frame else right_frame.grid(column=1, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+    # Create a menu bar
+    menu_bar = tk.Menu(root)
+    root.config(menu=menu_bar)
+    # Create a File menu with a Quit option
+    file_menu = tk.Menu(menu_bar, tearoff=0)
+    file_menu.add_command(label="Quit", command=root.quit)
+    menu_bar.add_cascade(label="File", menu=file_menu)
+    # Create a File menu with a Quit option
+    view_menu = tk.Menu(menu_bar, tearoff=0)
+    view_menu.add_command(label="Debug Messages", command=toggle_right_frame)
+    menu_bar.add_cascade(label="View", menu=view_menu)
+    
     root.mainloop()
+

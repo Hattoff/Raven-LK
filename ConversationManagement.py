@@ -3,11 +3,7 @@ import os
 import json
 import glob
 from time import time,sleep
-import datetime
 from uuid import uuid4
-import openai
-import tiktoken
-import re
 from UtilityFunctions import *
 from MemoryManagement import MemoryManager
 
@@ -33,7 +29,6 @@ class ConversationManager:
             self.__token_count += int(tokens)
             self.__check_memory_log()
             self.__generate_memory_string()
-
     
         ## Reload memory log from a list of memories
         def load_memory_list(self, memories):
@@ -51,7 +46,7 @@ class ConversationManager:
         ## Checks to see if the memory list needs rebuilt
         def __check_memory_log(self):
             memory_count = len(self.__memories)
-            ## Note that if the memory count is equal to the min log count then I don't rebuild the list
+            ## If the memory count is equal to the min log count then don't rebuild the list
             if self.__token_count > self.__max_log_tokens and memory_count > self.__min_log_count:
                 ## Rebuild the memory list with a minumum number of memories, but continue to add memories until token count is reached
                 memories = self.__memories.copy()
@@ -73,7 +68,7 @@ class ConversationManager:
                         else:
                             ## Exit loop early if no more token space
                             break
-                ## The memory list is backwards after this process so correct it
+                ## The memory list is backwards after this process so reverse it
                 self.__memories.reverse()
                 ## Once complete, update token count
                 self.__token_count = token_count
@@ -115,7 +110,6 @@ class ConversationManager:
         self.reload_memory_log(0)
         self.reload_memory_log(1)
         return self.get_recent_messages(recent_message_count)
-        # self.display_recent_messages()
 
     def reload_memory_log(self, depth=0):
             depth = int(depth)
@@ -147,22 +141,6 @@ class ConversationManager:
                     self.__eidetic_memory_log.load_memory_list(reloaded_memories)
                 else:
                     self.__episodic_memory_log.load_memory_list(reloaded_memories)
-
-    def display_recent_messages(self, display_count = 2):
-        display_count = min(int(display_count), self.__eidetic_memory_log.memory_count)
-        if display_count <= 0:
-            ## No messages to display
-            return
-        ## Display recent messages with dates and speaker stamps for context.
-        eidetic_memories = list(map(lambda m: m[0], self.__eidetic_memory_log.memories))
-        ## Sort list so most recent message is first
-        eidetic_memories = sorted(eidetic_memories, key=lambda x: x['timestamp'], reverse=True)
-        eidetic_memories = eidetic_memories[0:display_count]
-        for i in reversed(range(display_count)):
-            print('\n[%s] %s: %s\n' % (eidetic_memories[i]['timestring'],eidetic_memories[i]['speaker'],eidetic_memories[i]['content']))
-        ## If the last speaker was the user, prompt Raven to respond to their last message
-        if eidetic_memories[0]['speaker'] == 'USER':
-                self.generate_response()
 
     def get_recent_messages(self, message_count = 2):
         message_count = min(int(message_count), self.__eidetic_memory_log.memory_count)

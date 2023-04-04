@@ -8,6 +8,7 @@ from uuid import uuid4
 import pinecone
 import tiktoken
 import re
+from UtilityFunctions import *
 
 ## NOTE:Likely will move the OpenAi stuff later, not sure.
 import openai
@@ -37,9 +38,8 @@ import openai
 
 class ThemeManager:
     def __init__(self):
-        self.__config = configparser.ConfigParser()
-        self.__config.read('config.ini')
-        self.__pinecone_indexing_enabled = self.__config.getboolean('pinecone', 'pinecone_indexing_enabled')
+        self.__config = get_config()
+        self.debug_messages_enabled = True
 
     ## Get a list of themes from a summary of a memory and prepare the theme embedding objects
     def extract_themes(self, content):
@@ -50,7 +50,7 @@ class ThemeManager:
         ## Cleanup themes
         themes, has_error = self.cleanup_theme_response(themes_result)
         if has_error:
-            self.breakpoint('there was a thematic extraction error')
+            breakpoint('there was a thematic extraction error')
             return extracted_themes
         theme_namespace = self.__config['memory_management']['theme_namespace_template']
         theme_folderpath = self.__config['memory_management']['theme_stash_dir']
@@ -58,8 +58,8 @@ class ThemeManager:
         print('themes extracted...')
         for theme in themes:
             theme = str(theme)
-            vector = self.gpt3_embedding(theme)
-            theme_matches = self.query_pinecone(vector, 1, namespace=theme_namespace)
+            vector = gpt3_embedding(theme)
+            theme_matches = query_pinecone(vector, 1, namespace=theme_namespace)
             print('these are the theme matches:')
             print(theme_matches)
             if theme_matches is not None:
@@ -72,13 +72,13 @@ class ThemeManager:
                         existing_theme_id = theme_matches['matches'][0]['id']
                         ## Load, update, and save theme
                         theme_filepath = '%s/%s.json' % (theme_folderpath, existing_theme_id)
-                        existing_theme = self.load_json(theme_filepath)
+                        existing_theme = load_json(theme_filepath)
                         if theme not in existing_theme['themes']:
                             existing_theme['themes'].append(theme)
                             theme_string = ','.join(existing_theme['themes'])
-                            self.update_theme_vector(existing_theme_id, theme_string, theme_namespace)
+                            update_pinecone_vector(existing_theme_id, theme_string, theme_namespace)
                             existing_theme['theme_count'] = len(existing_theme['themes'])
-                            self.save_json(theme_filepath, existing_theme)
+                            save_json(theme_filepath, existing_theme)
                         ## Add to extracted theme list
                         if existing_theme_id not in extracted_themes:
                             extracted_themes.append(existing_theme_id)
@@ -87,17 +87,16 @@ class ThemeManager:
             ## The theme score falls under the threshold or there was no match, make a new theme
             unique_id = str(uuid4())
 
-            
             ## Add the theme to pinecone before making it so that similar themes in the current list can be merged
             payload = [{'id': unique_id, 'values': vector}]
-            self.save_payload_to_pinecone(payload, theme_namespace)
+            save_payload_to_pinecone(payload, theme_namespace)
 
             ## Make theme and save it locally
             new_theme = self.generate_theme(unique_id)
             new_theme['themes'].append(theme)
             new_theme['theme_count'] = 1
             theme_filepath = '%s/%s.json' % (theme_folderpath, unique_id)
-            self.save_json(theme_filepath, new_theme)
+            save_json(theme_filepath, new_theme)
 
             ## Add to extracted theme list
             extracted_themes.append(unique_id)
@@ -108,7 +107,7 @@ class ThemeManager:
     def extract_content_themes(self, content):
         prompt_name = 'memory_theme'
         ## Load the prompt from a .json file
-        prompt_obj = self.load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
+        prompt_obj = load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
         
         temperature = prompt_obj['summary']['temperature']
         response_tokens = prompt_obj['summary']['response_tokens']
@@ -116,7 +115,7 @@ class ThemeManager:
         ## Generate memory element
         prompt_content = prompt_obj['summary']['system_message'] % (content)
         prompt = [self.compose_gpt_message(prompt_content,'user')]
-        response, tokens = self.gpt_completion(prompt, temperature, response_tokens)
+        response, tokens = gpt_completion(prompt, temperature, response_tokens)
         return response
 
     ## Ensure the theme extraction has been cleaned up
@@ -131,7 +130,7 @@ class ThemeManager:
         except Exception as err:
             print('ERROR: unable to parse the json object when extracting themes')
             print('Value from GPT:\n\n%s' % themes)
-            self.breakpoint('\n\npausing...')
+            breakpoint('\n\npausing...')
             return [], has_error
 
         dict_keys = list(themes_obj.keys())
@@ -139,7 +138,7 @@ class ThemeManager:
             print('ERROR: unknown response for theme extraction')
             print('Value from GPT:\n\n%s' % themes)
             print(themes_obj)
-            self.breakpoint('\n\npausing...')
+            breakpoint('\n\npausing...')
             return [], has_error
         else:
             key = dict_keys[0]
@@ -150,21 +149,14 @@ class ThemeManager:
                 print('ERROR: unknown response for theme extraction')
                 print('Value from GPT:\n\n%s' % themes)
                 print(themes_obj)
-                self.breakpoint('\n\npausing...')
+                breakpoint('\n\npausing...')
                 return [], has_error
         return [], has_error
-
-    ## Load the theme, regenerate the embedding string, get embedding, and update the pinecone record
-    def update_theme_vector(self, theme_id, theme_string, namespace):
-        if not self.__pinecone_indexing_enabled:
-            return
-        vector = self.gpt3_embedding(theme_string)
-        update_response = self.__vector_db.update(id=theme_id,values=vector,namespace=namespace)
 
     ## Create a Theme object and save it locally.
     def generate_theme(self, theme_id):
         timestamp = time()
-        timestring = self.timestamp_to_datetime(timestamp)
+        timestring = timestamp_to_datetime(timestamp)
         theme_obj = {
             'id':theme_id,
             'themes':[],
@@ -191,97 +183,3 @@ class ThemeManager:
         }
         ## TODO: Save the link record locally
         return link
-
-    def timestamp_to_datetime(self, unix_time):
-        return (datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M:%S%p %Z")).strip()
-
-    def open_file(self, filepath):
-        with open(filepath, 'r', encoding='utf-8') as infile:
-            return infile.read()
-
-    def save_file(self, filepath, content):
-        with open(filepath, 'w', encoding='utf-8') as outfile:
-            outfile.write(content)
-
-    def load_json(self, filepath):
-        with open(filepath, 'r', encoding='utf-8') as infile:
-            return json.load(infile)
-
-    def save_json(self, filepath, payload):
-        with open(filepath, 'w', encoding='utf-8') as outfile:
-            json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
-
-#####################################################
-    ## Debug functions
-    def breakpoint(self, message = '\n\nEnter to continue...'):
-        input(message+'\n')
-    
-    def debug_message(self, message):
-        if self.debug_messages_enabled:
-            print(message)
-
-######################################################
-## Pinecone stuff
-#### Query pinecone with vector. If search_all = True then name_space will be ignored.
-    def query_pinecone(self, vector, return_n, namespace = "", search_all = False):
-        if search_all:
-            results = self.__vector_db.query(vector=vector, top_k=return_n)
-        else:
-            results = self.__vector_db.query(vector=vector, top_k=return_n, namespace=namespace)
-        return results
-
-    ## Seems like a useless function but I want this function to check for the config pinecone_indexing_enabled
-    def save_payload_to_pinecone(self,payload, namespace):
-        if not self.__pinecone_indexing_enabled:
-            return
-        self.__vector_db.upsert(payload, namespace=namespace)
-
-    #### Save vector to pinecone
-    def save_vector_to_pinecone(self, vector, unique_id, metadata, namespace=""):
-        if not self.__pinecone_indexing_enabled:
-            return
-        self.debug_message('Saving vector to pinecone.')
-        payload_content = {'id': unique_id, 'values': vector, 'metadata': metadata}
-        payload = list()
-        payload.append(payload_content)
-        self.__vector_db.upsert(payload, namespace=namespace)
-
-
-    def gpt3_embedding(self, content):
-        engine = self.__config['open_ai']['input_engine']
-        content = content.encode(encoding='ASCII',errors='ignore').decode()  # fix any UNICODE errors
-        response = openai.Embedding.create(input=content,engine=engine)
-        vector = response['data'][0]['embedding']  # this is a normal list
-        return vector
-
-    def gpt_completion(self, messages, temp=0.0, tokens=400, stop=['USER:', 'RAVEN:']):
-        engine = self.__config['open_ai']['model']
-        top_p=1.0
-        freq_pen=0.0
-        pres_pen=0.0
-
-        max_retry = 5
-        retry = 0
-        while True:
-            try:
-                response = openai.ChatCompletion.create(
-                    model=engine,
-                    messages=messages,
-                    temperature=temp,
-                    max_tokens=tokens,
-                    top_p=top_p,
-                    frequency_penalty=freq_pen,
-                    presence_penalty=pres_pen,
-                    stop=stop)
-                response_id = str(response['id'])
-                prompt_tokens = int(response['usage']['prompt_tokens'])
-                completion_tokens = int(response['usage']['completion_tokens'])
-                total_tokens = int(response['usage']['total_tokens'])
-                response_str = response['choices'][0]['message']['content'].strip()
-                return response_str, total_tokens
-            except Exception as oops:
-                retry += 1
-                if retry >= max_retry:
-                    return "GPT3.5 error: %s" % oops, -1
-                print('Error communicating with OpenAI:', oops)
-                sleep(2)

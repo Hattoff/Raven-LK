@@ -93,7 +93,7 @@ class MemoryManager:
         ## Return a JSON version of this object to save
         @property
         def cache(self):
-            timestamp = get_time()
+            timestamp = time()
             timestring = timestamp_to_datetime(timestamp)
             cache = {
                 "id":self.__id,
@@ -225,7 +225,7 @@ class MemoryManager:
 
     def save_state(self):
         ## TODO: Restrict backups to max_backup_states
-        timestamp = get_time()
+        timestamp = time()
         timestring = timestamp_to_datetime(timestamp)
         unique_id = str(uuid4())
 
@@ -248,7 +248,7 @@ class MemoryManager:
     ## Assemble and index eidetic memories from a message by a speaker
     ## Eidetic memory is the base form of all episodic memory
     def generate_eidetic_memory(self, speaker, content):
-        timestamp = get_time()
+        timestamp = time()
         debug_message('Generating eidetic memory...', self.debug_messages_enabled)
         unique_id = str(uuid4())
         timestring = timestamp_to_datetime(timestamp)
@@ -280,7 +280,7 @@ class MemoryManager:
 
     ## Assemble an eposodic memory from a collection of eidetic or lower-depth episodic memories
     def generate_episodic_memory(self, memories, depth):
-        timestamp = get_time()
+        timestamp = time()
         debug_message('Generating episodic memory of cache depth (%s)...' % str(depth), self.debug_messages_enabled)
         unique_id = str(uuid4())
         timestring = timestamp_to_datetime(timestamp)
@@ -609,7 +609,7 @@ class MemoryManager:
         update_response = update_pinecone_vector(theme_id, vector, namespace)
 
     def generate_theme(self, theme_id):
-        timestamp = get_time()
+        timestamp = time()
         timestring = timestamp_to_datetime(timestamp)
         theme_obj = {
             'id':theme_id,
