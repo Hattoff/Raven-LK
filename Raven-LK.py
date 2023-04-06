@@ -13,7 +13,7 @@ conversation_manager = ConversationManager()
 _full_height = False
 _window_width = 600
 _window_height = 600
-show_right_frame = False
+_show_debug_frame = False
 
 ####### TKINTER functions by GPT4 prompted by David Shapiro(daveshap); modified by Matt Hatton(hattoff)
 ####### https://github.com/daveshap/Chapter_Summarizer_GPT4/blob/main/chat_tkinter2.py
@@ -218,6 +218,11 @@ def check_spelling(event):
         # Display suggestions for misspelled words
         user_entry.tag_add("spell_error", start_position, end_position)
 
+## Show or hide the debug messages
+def toggle_debug_frame():
+    global _show_debug_frame
+    _show_debug_frame = not _show_debug_frame
+    right_frame.grid_forget() if not _show_debug_frame else right_frame.grid(column=1, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
 if __name__ == "__main__":
     # Tkinter GUI
@@ -248,16 +253,18 @@ if __name__ == "__main__":
     chat_text.tag_configure('system', justify='center', foreground="white", font=("Calibri", 14, "bold"))
 
     ## Secondary log I intend to use for debugging messages, but I am unsure if they will work with async function calls.
-    right_chat_text = tk.Text(right_frame, wrap=tk.WORD, width=60, height=35, bg='#333333')
-    right_chat_text.grid(column=0, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-    right_chat_text.tag_configure('user', background='#444654', wrap='word', justify='right',foreground="white", font=("Calibri", 12))
+    debug_messages = tk.Text(right_frame, wrap=tk.WORD, width=60, height=35, bg='#333333')
+    debug_messages.grid(column=0, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+    debug_messages.tag_configure('system', wrap='word', justify='center',foreground="white", font=("Calibri", 12))
+    debug_messages.insert(tk.END, "\nNothing here yet...\n\n", 'system')
+    debug_messages.config(state='disabled')
 
     send_button = ttk.Button(main_frame, text="Send", command=send_message)
-    send_button.grid(column=0, row=2,columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
+    send_button.grid(column=0, row=2, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
 
     ai_status = tk.StringVar()
     ai_status_label = ttk.Label(main_frame, textvariable=ai_status)
-    ai_status_label.grid(column=2, row=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+    ai_status_label.grid(column=1, row=3, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
 
     # Initialize the text box
     user_entry = tk.Text(main_frame, width=50, height=5, wrap="word", background='#D3D3D3', font=("Calibri", 12))
@@ -282,16 +289,7 @@ if __name__ == "__main__":
 
     snap_window_to_cursor(800, 600)
 
-    # Create a BooleanVar to control the visibility of the right_frame
-    # show_right_frame = tk.BooleanVar(value=False)
-
     right_frame.grid_forget()
-
-    def toggle_right_frame():
-        global show_right_frame
-        show_right_frame = not show_right_frame
-        right_frame.grid_forget() if not show_right_frame else right_frame.grid(column=1, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-
     # Create a menu bar
     menu_bar = tk.Menu(root)
     root.config(menu=menu_bar)
@@ -301,8 +299,7 @@ if __name__ == "__main__":
     menu_bar.add_cascade(label="File", menu=file_menu)
     # Create a File menu with a Quit option
     view_menu = tk.Menu(menu_bar, tearoff=0)
-    view_menu.add_command(label="Debug Messages", command=toggle_right_frame)
+    view_menu.add_command(label="Debug Messages", command=toggle_debug_frame)
     menu_bar.add_cascade(label="View", menu=view_menu)
-    
-    root.mainloop()
 
+    root.mainloop()

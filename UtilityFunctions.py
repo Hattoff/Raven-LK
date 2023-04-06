@@ -10,6 +10,8 @@ import tiktoken
 import re
 import openai
 
+_raven_update_debug = None
+
 #####################################################
                 ## File Management ##
 

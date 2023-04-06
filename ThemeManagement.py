@@ -8,6 +8,7 @@ from uuid import uuid4
 import pinecone
 import tiktoken
 import re
+from PromptManagement import PromptManager
 from UtilityFunctions import *
 
 ## NOTE:Likely will move the OpenAi stuff later, not sure.
@@ -40,6 +41,7 @@ class ThemeManager:
     def __init__(self):
         self.__config = get_config()
         self.debug_messages_enabled = True
+        self.__prompts = PromptManager()
 
     ## Get a list of themes from a summary of a memory and prepare the theme embedding objects
     def extract_themes(self, content):
@@ -53,7 +55,7 @@ class ThemeManager:
             breakpoint('there was a thematic extraction error')
             return extracted_themes
         theme_namespace = self.__config['memory_management']['theme_namespace_template']
-        theme_folderpath = self.__config['memory_management']['theme_stash_dir']
+        theme_folderpath = self.__prompts.ThemeExtraction.stash_path
         theme_match_threshold = float(self.__config['memory_management']['theme_match_threshold'])
         print('themes extracted...')
         for theme in themes:
@@ -105,17 +107,12 @@ class ThemeManager:
 
     ## Get themes
     def extract_content_themes(self, content):
-        prompt_name = 'memory_theme'
-        ## Load the prompt from a .json file
-        prompt_obj = load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
-        
-        temperature = prompt_obj['summary']['temperature']
-        response_tokens = prompt_obj['summary']['response_tokens']
+        prompt = self.__prompts.ThemeExtraction.get_prompt(content)
+        temperature = self.__prompts.ThemeExtraction.temperature
+        response_tokens = self.__prompts.ThemeExtraction.response_tokens
 
-        ## Generate memory element
-        prompt_content = prompt_obj['summary']['system_message'] % (content)
-        prompt = [self.compose_gpt_message(prompt_content,'user')]
-        response, tokens = gpt_completion(prompt, temperature, response_tokens)
+        message = [self.compose_gpt_message(prompt,'user')]
+        response, tokens = gpt_completion(message, temperature, response_tokens)
         return response
 
     ## Ensure the theme extraction has been cleaned up
@@ -183,3 +180,18 @@ class ThemeManager:
         }
         ## TODO: Save the link record locally
         return link
+
+    def compose_gpt_message(self, content, role, name=''):
+        content = content.encode(encoding='ASCII',errors='ignore').decode() ## Cheeky way to remove encoding errors
+        if name == '':
+            return {"role":role, "content": content}
+        else:
+            role = 'system'
+            return {"role":role,"name":name,"content": content}
+
+    ## Thematic Re-Classification
+        ## Process of re-classification will be to select from various themes, get a random assortment of memories, get a random variation of memory ranges, and re-theme them. Link strength will need to be updated based on the results.
+    ## Thematic Searching
+        ## Process of thematic searching will be to search for themes of the current conversation, focusing on the last user message, getting a number of top results, getting the memories referenced in those results, and comparing the returned memories to the semantic search results and the theme link strengths. The results of these comparisons will produce several memories which can then be extended to their most recent neighbor for context, affixed with the timestamp, and summarized in contast with the user's message. This recall will then be added as a section in the conversation prompt.
+    
+

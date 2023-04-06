@@ -5,6 +5,8 @@ import glob
 import datetime
 from uuid import uuid4
 import re
+from ThemeManagement import ThemeManager
+from PromptManagement import PromptManager
 from UtilityFunctions import *
 
 ##### NOTE: Token counts should leave enough room for a variety of prompt instructions, since their use may vary. I am thinking of leaving a buffer of 1000 to ensure there is enough room, but I will generalize it so adjustments can be made easily
@@ -15,6 +17,8 @@ from UtilityFunctions import *
 class MemoryManager:
     def __init__(self):
         self.__config = get_config()
+        self.__prompts = PromptManager()
+        self.__themes = ThemeManager()
         self.__cache_token_limit = int(self.__config['memory_management']['cache_token_limit'])
         self.__max_tokens = int(self.__config['open_ai']['max_token_input'])
         self.__episodic_memory_caches = [] # index will represent memory depth, useful for dynamic memory expansion
@@ -27,7 +31,7 @@ class MemoryManager:
             self.create_state()
 
     ## Houses memories of a particular depth. Each change will trigger will be followed with a state save
-    class MemoryCache:
+    class _MemoryCache:
         ## Depth should not be changed after initialization.
         ## If cache is not empty then load it, otherwise start fresh.
         def __init__(self, depth, cache_token_limit, max_tokens, cache=None):
@@ -40,6 +44,7 @@ class MemoryManager:
             self.__max_tokens = int(max_tokens)
             self.__memories = list()
             self.__current_memory_ids = list()
+            self.__last_memory_id = None
             self.__previous_memory_ids = list()
             self.__token_count = 0
             self.__memory_stash_folder = (self.__config['memory_management']['stash_folder_template'] % self.__depth)
@@ -120,6 +125,12 @@ class MemoryManager:
                 past_sibling_id = self.__memories[memory_count-1]['id']
                 self.update_past_sibling(memory_id, past_sibling_id)
                 memory['past_sibling'] = past_sibling_id
+            elif self.__last_memory_id is not None:
+                memory_id = memory['id']
+                past_sibling_id = self.__last_memory_id
+                self.update_past_sibling(memory_id, past_sibling_id)
+                memory['past_sibling'] = past_sibling_id
+                self.__last_memory_id = None
             self.__memories.append(memory)
             self.__current_memory_ids.append(memory['id'])
             self.parent_local_child_memories(memory)
@@ -135,8 +146,12 @@ class MemoryManager:
         def transfer_memory_ids(self):
             ## Cache the current caches memory ids for conversation loading purposes
             self.__previous_memory_ids = self.__current_memory_ids.copy()
+            if len(self.__current_memory_ids) > 0:
+                self.__last_memory_id = self.__current_memory_ids[len(self.__current_memory_ids)-1]
+                print('setting last memory id')
+                print(self.__last_memory_id)
             self.__current_memory_ids.clear()
-
+            
         def flush_memory_cache(self):
             ## Clear memory cache and reset token count
             self.__memories.clear()
@@ -209,7 +224,7 @@ class MemoryManager:
 
         for cache in state['memory_caches']:
             depth = cache['depth']
-            self.__episodic_memory_caches.append(self.MemoryCache(depth, self.__cache_token_limit, self.__max_tokens, cache))
+            self.__episodic_memory_caches.append(self._MemoryCache(depth, self.__cache_token_limit, self.__max_tokens, cache))
 
         ## TODO:
         ## load state, if that fails, try backup files
@@ -220,7 +235,7 @@ class MemoryManager:
     def create_state(self):
         for i in range(self.__max_episodic_depth+1):
             ## Initialize all episodic memory caches
-            self.__episodic_memory_caches.append(self.MemoryCache(i, self.__cache_token_limit, self.__max_tokens))
+            self.__episodic_memory_caches.append(self._MemoryCache(i, self.__cache_token_limit, self.__max_tokens))
         self.save_state()
 
     def save_state(self):
@@ -299,7 +314,7 @@ class MemoryManager:
         summary_tokens = get_token_estimate(summary)
         
         ## Extract the themes of this memory
-        themes = self.extract_themes(content)
+        themes = self.__themes.extract_themes(content)
         theme_namespace = self.__config['memory_management']['theme_namespace_template']
         theme_folderpath = self.__config['memory_management']['theme_stash_dir']
 
@@ -311,7 +326,7 @@ class MemoryManager:
             theme_memory_ids = map(lambda l: l['memory_id'], theme_obj['links'])
             for memory_id in memory_ids:
                 if memory_id not in theme_memory_ids:
-                    memory_link = self.generate_theme_link(theme_id, memory_id, (int(depth)-1))
+                    memory_link = self.__themes.generate_theme_link(theme_id, memory_id, (int(depth)-1))
                     theme_links.append(memory_link)
                     theme_obj['links'].append(memory_link)
             save_json(theme_filepath, theme_obj)
@@ -418,28 +433,19 @@ class MemoryManager:
     def summarize_content(self, content, depth, speaker = '', content_tokens = 0):
         ## Choose which memory processing prompt to use
         if int(depth) == 0:
-            prompt_name = 'eidetic_memory'
+            prompt = self.__prompts.EideticSummary.get_prompt(speaker, content)
+            response_tokens = self.__prompts.EideticSummary.response_tokens
+            temperature = self.__prompts.EideticSummary.temperature
         elif int(depth) == 1:
-            prompt_name = 'eidetic_to_episodic_memory'
+            prompt = self.__prompts.EideticToEpisodicSummary.get_prompt(content)
+            response_tokens = self.__prompts.EideticToEpisodicSummary.response_tokens
+            temperature = self.__prompts.EideticToEpisodicSummary.temperature
         else:
-            prompt_name = 'episodic_to_episodic_memory'
+            prompt = self.__prompts.EpisodicSummary.get_prompt(content)
+            response_tokens = self.__prompts.EpisodicSummary.response_tokens
+            temperature = self.__prompts.EpisodicSummary.temperature
 
-        ## Load the prompt from a .json file
-        prompt_obj = load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
-        
-        ## Sum the token count for the content with the intended prompt token count
-        response_tokens = int(prompt_obj['summary']['response_tokens']) + int(content_tokens)
-        if response_tokens > self.__max_tokens:
-            response_tokens = self.__max_tokens
-        temperature = float(prompt_obj['summary']['temperature'])
-
-        ## Generate memory element
-        messages = list()
-        if int(depth) == 0:
-            prompt_content = prompt_obj['summary']['system_message'] % (speaker, content)
-        else:
-            prompt_content = prompt_obj['summary']['system_message'] % content
-        messages.append(self.compose_gpt_message(prompt_content,'user'))
+        messages = [self.compose_gpt_message(prompt,'user')]
         memory_element, total_tokens = gpt_completion(messages, temperature, response_tokens)
         return memory_element
 
