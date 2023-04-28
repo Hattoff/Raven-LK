@@ -113,6 +113,20 @@ class _ThemeExtraction(_Prompt):
     @property
     def stash_path(self):
         return self.config['memory_management']['theme_stash_dir']
+    
+## Prompt to check if RAVEN needs more information
+class _RecallExtraction(_Prompt):
+    def __init__(self, temperature, response_tokens):
+        super().__init__(temperature, response_tokens)
+    def get_prompt(self, content):
+        prompt = f"Review the conversation notes and conversation log between RAVEN and USER then follow the INSTRUCTIONS below:{content}\nINSTRUCTIONS:\nGiven only the information provided, can you address USER's most recent message? If you can then respond with TRUE otherwise respond with FALSE."
+        return prompt
+    @property
+    def prompt_tokens(self):
+        return get_token_estimate(self.get_prompt(' '))
+    @property
+    def stash_path(self):
+        return self.config['memory_management']['memory_recall_stash_dir']
 
 ## Initialize all prompt objects with their temperature and response token count
 class PromptManager:
@@ -122,7 +136,8 @@ class PromptManager:
         self.EideticSummary = _EideticSummary(0.0, 250)
         self.EideticToEpisodicSummary = _EideticToEpisodicSummary(0.0, 500)
         self.EpisodicSummary = _EpisodicSummary(0.0, 500)
-        self.ThemeExtraction = _ThemeExtraction(0.0, 250)       
+        self.ThemeExtraction = _ThemeExtraction(0.0, 250)
+        self.RecallExtraction = _RecallExtraction(0.0, 20)       
 
     ## Conversation prompts will combine several sections and a special prompt, this estimates the number of tokens needed before any additional content is added
     @property

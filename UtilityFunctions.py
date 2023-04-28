@@ -9,7 +9,6 @@ import pinecone
 import tiktoken
 import re
 import openai
-
 _raven_update_debug = None
 
 #####################################################
@@ -129,7 +128,7 @@ def query_pinecone(vector, return_n, namespace = "", search_all = False):
     return results
 
 def enable_pinecone_indexing():
-    global pinecone_indexing_enabled 
+    global pinecone_indexing_enabled
     pinecone_indexing_enabled = True
 
 def disable_pinecone_indexing():

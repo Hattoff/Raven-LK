@@ -2,17 +2,18 @@ import configparser
 import os
 import json
 import glob
+import random
 from time import time,sleep
 import datetime
 from uuid import uuid4
-import pinecone
-import tiktoken
+# import pinecone
+# import tiktoken
 import re
 from PromptManagement import PromptManager
 from UtilityFunctions import *
 
 ## NOTE:Likely will move the OpenAi stuff later, not sure.
-import openai
+# import openai
 
 ## The theme manager will extract themes from given content, create or merge existing Theme object, 
 ## create and manage links between memories and themes, manage the iterative theming of memories, and
@@ -46,7 +47,7 @@ class ThemeManager:
     ## Get a list of themes from a summary of a memory and prepare the theme embedding objects
     def extract_themes(self, content):
         print('Extracting themes...')
-        extracted_themes = list()
+        extracted_themes = {}
         ## Prompt for themes
         themes_result = self.extract_content_themes(content)
         ## Cleanup themes
@@ -60,15 +61,13 @@ class ThemeManager:
         print('themes extracted...')
         for theme in themes:
             theme = str(theme)
+            ## Embed this theme and check for the most similar Theme Object
             vector = gpt3_embedding(theme)
             theme_matches = query_pinecone(vector, 1, namespace=theme_namespace)
-            print('these are the theme matches:')
-            print(theme_matches)
             if theme_matches is not None:
                 if len(theme_matches['matches']) > 0:
                     ## There is a match so check the threshold
                     match_score = float(theme_matches['matches'][0]['score'])
-                    print('the score for theme match {%s} was %s' % (theme, str(match_score)))
                     if match_score >= theme_match_threshold:
                         ## Theme score is above the threshold, update an existing theme
                         existing_theme_id = theme_matches['matches'][0]['id']
@@ -76,16 +75,31 @@ class ThemeManager:
                         theme_filepath = '%s/%s.json' % (theme_folderpath, existing_theme_id)
                         existing_theme = load_json(theme_filepath)
                         if theme not in existing_theme['themes']:
+                            ## Add new theme to the themes list
                             existing_theme['themes'].append(theme)
-                            theme_string = ','.join(existing_theme['themes'])
-                            update_pinecone_vector(existing_theme_id, theme_string, theme_namespace)
+                            ## Start tracking the history of this newly added theme
+                            existing_theme['theme_history'][theme] = [self.generate_theme_history(0, match_score)]
+                            ## Embed the new collection of themes
+                            new_theme_string = ','.join(existing_theme['themes'])
+                            new_theme_vector = gpt3_embedding(new_theme_string)
+                            ## Update existing pinecone record's vector
+                            update_pinecone_vector(existing_theme_id, new_theme_vector, theme_namespace)
                             existing_theme['theme_count'] = len(existing_theme['themes'])
-                            save_json(theme_filepath, existing_theme)
-                        ## Add to extracted theme list
+                        else:
+                            ## Get the existing theme history, the count elements is the new iteration number
+                            history_count = len(existing_theme['theme_history'][theme])
+                            ## Track the match_score of this theme
+                            existing_theme['theme_history'][theme].append(self.generate_theme_history(history_count, match_score))
+                        
+                        ## Update the existing Theme Object
+                        save_json(theme_filepath, existing_theme)
+                            
+                        ## Add to extracted theme id to list and keep track of how many times a similar theme has been extracted
                         if existing_theme_id not in extracted_themes:
-                            extracted_themes.append(existing_theme_id)
+                            extracted_themes[existing_theme_id] = {'recurrence':1, 'new_theme':False}
+                        else:
+                            extracted_themes[existing_theme_id]['recurrence'] += 1
                         continue
-            print('Making new themes')
             ## The theme score falls under the threshold or there was no match, make a new theme
             unique_id = str(uuid4())
 
@@ -95,13 +109,16 @@ class ThemeManager:
 
             ## Make theme and save it locally
             new_theme = self.generate_theme(unique_id)
+            ## Add the theme to the list
             new_theme['themes'].append(theme)
             new_theme['theme_count'] = 1
+            ## Initialize the theme history tracking. The similarity score is 1 (100%)
+            new_theme['theme_history'][theme] = [self.generate_theme_history(0, 1.0)]
             theme_filepath = '%s/%s.json' % (theme_folderpath, unique_id)
             save_json(theme_filepath, new_theme)
 
             ## Add to extracted theme list
-            extracted_themes.append(unique_id)
+            extracted_themes[unique_id] = {'recurrence':1, 'new_theme':True}
 
         return extracted_themes
 
@@ -149,34 +166,52 @@ class ThemeManager:
                 breakpoint('\n\npausing...')
                 return [], has_error
         return [], has_error
-
+    
     ## Create a Theme object and save it locally.
-    def generate_theme(self, theme_id):
+    def generate_theme(self, theme_id, recurrence = 0):
         timestamp = time()
         timestring = timestamp_to_datetime(timestamp)
         theme_obj = {
             'id':theme_id,
             'themes':[],
             'theme_count':0,
-            'links':[],
+            'links':{},
+            'theme_history':{},
+            'recurrence': int(recurrence),
             'timestamp':timestamp,
             'timestring':timestring,
             'update_embedding':False
         }
         ## TODO: Save the Theme object locally
         return theme_obj
+    
+    ## Object used to track theme history. I intend to use this to analyze theme decoherence.
+    def generate_theme_history(self, iteration = 0, similarity = 0.0):
+        timestamp = time()
+        timestring = timestamp_to_datetime(timestamp)
+        theme_history_obj = {
+            'iteration':iteration,
+            'similarity':similarity,
+            'timestamp':timestamp,
+            'timestring':timestring
+        }
+        return theme_history_obj
 
-    ## Create a link record to share between the Theme object and the Memory, then save it locally.
-    def generate_theme_link(self, theme_id, memory_id, memory_depth):
+    ## Create a Link which will be stored on both the Theme and Memory
+    def generate_theme_link(self, theme_id, memory_id, memory_depth = 0, recurrence = 0):
         unique_id = str(uuid4())
+        timestamp = time()
+        timestring = timestamp_to_datetime(timestamp)
         link = {
             'id':unique_id,
             'theme_id':theme_id,
             'memory_id':memory_id,
             'depth':int(memory_depth),
+            'recurrence': int(recurrence),
             'weight':0.0,
             'cooldown_count':0,
-            'repeat_theme_count':0
+            'timestamp':timestamp,
+            'timestring':timestring
         }
         ## TODO: Save the link record locally
         return link
@@ -190,7 +225,142 @@ class ThemeManager:
             return {"role":role,"name":name,"content": content}
 
     ## Thematic Re-Classification
-        ## Process of re-classification will be to select from various themes, get a random assortment of memories, get a random variation of memory ranges, and re-theme them. Link strength will need to be updated based on the results.
+        ## Process of re-classification will be to select from various themes, get a random assortment of memories, get a random variation of memory ranges, and re-theme them. Link strength will need to be updated based on the results. We will calculate the Mediant for new weights. If that is too drastic then we can use a hyperparameter to adjust the rate of correction.
+
+    def retheme(self):
+        ## Get all themes
+        theme_glob = glob.glob('./%s/*' % self.__config['memory_management']['theme_stash_dir'])
+        themes = list(map(lambda x: x.replace('\\','/'), list(theme_glob)))
+
+        memory_base_path = self.__config['memory_management']['memory_stash_dir']
+        memory_stash_template = self.__config['memory_management']['stash_folder_template']
+
+        ## For each theme get a random link and the adjacent memories
+        ## Recombine the memories and retheme
+        ## Calculate new link weights
+        for theme_path in themes:
+            memories = {}
+            theme = load_json(theme_path)
+            random_memory = {}
+            retry = 4
+            attempt = 0
+            done = False
+            random_link = {}
+            while not done:
+                random_link_id = random.choice(list(theme['links'].keys()))
+                random_link = theme['links'][random_link_id]
+                if random_link['cooldown_count'] == 0:  
+                    print(random_link)
+                    done = True
+                else:
+                    attempt += 1
+                    if attempt > retry:
+                        done = True
+            
+            if 'id' not in random_link:
+                print(f'Unable to get a memory link from theme {theme_path}')
+                continue
+            
+            memory_id = random_link['memory_id']
+            memory_folder_path = memory_stash_template % int(random_link['depth'])
+            memory_path = '%s/%s/%s.json' % (memory_base_path, memory_folder_path, memory_id)
+            random_memory = load_json(memory_path)
+            memories[memory_id] = {'object':random_memory, 'path':memory_path}
+
+            ## Get a random bool and set the search direction
+            coin_toss = bool(random.getrandbits(1))
+
+            if coin_toss:
+                search_direction = 'next_sibling'
+            else:
+                search_direction = 'past_sibling'
+            
+            ## If that direction ends early then reverse the direction
+            if random_memory[search_direction] is None:
+                if not coin_toss:
+                    search_direction = 'next_sibling'
+                else:
+                    search_direction = 'past_sibling'    
+
+            ## Get the up to 4 memories in the randomly chosen search direction
+            for i in range(3):
+                memory_id = random_memory[search_direction]
+                if memory_id is None:
+                    break
+                memory_path = '%s/%s/%s.json' % (memory_base_path, memory_folder_path, memory_id)
+                random_memory = load_json(memory_path)
+                memories[memory_id] = {'object':random_memory, 'path':memory_path}
+
+            if len(memories) == 1:
+                print('Only one memory found. Skipping retheme.')
+                continue
+
+            ## Sort the list from oldest to most recent
+            sorted(memories.items(), key=lambda x: x[1]['object']['timestamp'], reverse=True)
+            dict(memories)
+            print(list(map(lambda x: x[1]['object']['timestring'], memories.items())))
+
+            memory_keys = list(memories.keys())
+
+            ## Concatenate the content from the memories and retheme
+            content = ''
+            content_tokens = 0
+            for memory_id in memory_keys:
+                content += '%s\n' % (memories[memory_id]['object']['summary'])
+
+            rethemes = self.extract_themes(content)
+            theme_namespace = self.__config['memory_management']['theme_namespace_template']
+            theme_folderpath = self.__config['memory_management']['theme_stash_dir']
+            rethemes_keys = list(rethemes.keys())
+            
+            ## Create new theme links if the theme is new
+            new_memory_links = {}
+            new_theme_links = {}
+            for memory_id in memory_keys:
+                new_memory_links[memory_id] = {}
+                existing_memory_links = (memories[memory_id]['object']['theme_links']).keys()
+                additional_recurrence_count = 0
+                for theme_id in rethemes_keys:
+                    recurrence = rethemes[theme_id]['recurrence']
+                    additional_recurrence_count += recurrence
+                    if rethemes[theme_id]['new_theme'] or theme_id not in existing_memory_links:
+                        ## Create a new link but set the recurrance to 0 so we can update all links at the same time
+                        link_obj = self.generate_theme_link(theme_id, memory_id, int(memories[memory_id]['object']['depth']), 0)
+                        if theme_id not in new_theme_links:
+                            new_theme_links[theme_id] = {}
+                        new_theme_links[theme_id][memory_id] = link_obj
+                        new_memory_links[memory_id][theme_id] = link_obj
+                print('Memory %s currently has total theme count:%s, we will be adding stats for %s themes for a total of %s recurrences.' % (memory_id, str(memories[memory_id]['object']['total_theme_count']), str(len(rethemes_keys)), str(additional_recurrence_count)))
+                print(f'Memory {memory_id} has these links:')
+                print(memories[memory_id]['object']['theme_links'])
+                ## Update memory with retheme recurrances
+                total_theme_count = memories[memory_id]['object']['total_theme_count'] + additional_recurrence_count
+                memories[memory_id]['object']['total_theme_count'] = total_theme_count
+                print('Memory %s now has total theme count: %s'% (memory_id, str((memories[memory_id]['object']['total_theme_count']))))
+                print(f'Adding these links to memory {memory_id}:')
+                print(new_memory_links[memory_id])
+                ## Add new links to list
+                memories[memory_id]['object']['theme_links'].update(new_memory_links[memory_id])
+                updated_link_ids = (memories[memory_id]['object']['theme_links']).keys()
+                for updated_link_id in updated_link_ids:
+                    if updated_link_id in rethemes_keys:
+                        recurrence = rethemes[updated_link_id]['recurrence']
+                        memories[memory_id]['object']['theme_links'][updated_link_id]['recurrence'] += recurrence
+                        
+                    memories[memory_id]['object']['theme_links'][updated_link_id]['weight'] = memories[memory_id]['object']['theme_links'][updated_link_id]['recurrence'] / total_theme_count
+                    save_json(memories[memory_id]['path'], memories[memory_id]['object'])
+                    updated_theme_path = ('./%s/%s.json') % (self.__config['memory_management']['theme_stash_dir'], updated_link_id)
+                    updated_theme = load_json(updated_theme_path)
+                    updated_theme['links'].update({memory_id: memories[memory_id]['object']['theme_links'][updated_link_id]})
+                    save_json(updated_theme_path, updated_theme)
+                
+                ## Update the weight of each theme link and update the recurrance if the theme was in the retheme list
+                # for update_theme_id in (memories[memory_id]['object']['theme_links']).keys():
+                    # if update_theme_id in rethemes_keys:
+                        
+
+        return
+    
     ## Thematic Searching
         ## Process of thematic searching will be to search for themes of the current conversation, focusing on the last user message, getting a number of top results, getting the memories referenced in those results, and comparing the returned memories to the semantic search results and the theme link strengths. The results of these comparisons will produce several memories which can then be extended to their most recent neighbor for context, affixed with the timestamp, and summarized in contast with the user's message. This recall will then be added as a section in the conversation prompt.
     

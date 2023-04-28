@@ -148,8 +148,6 @@ class MemoryManager:
             self.__previous_memory_ids = self.__current_memory_ids.copy()
             if len(self.__current_memory_ids) > 0:
                 self.__last_memory_id = self.__current_memory_ids[len(self.__current_memory_ids)-1]
-                print('setting last memory id')
-                print(self.__last_memory_id)
             self.__current_memory_ids.clear()
             
         def flush_memory_cache(self):
@@ -270,10 +268,13 @@ class MemoryManager:
         depth = 0
 
         content_tokens = get_token_estimate(content)
-
-        summary_result = self.summarize_content('%s: %s' % (speaker, content), depth, speaker, content_tokens = content_tokens)
-        summary = self.cleanup_response(summary_result)
+        
+        summary = ('%s: %s\n') % (speaker, content)
         summary_tokens = get_token_estimate(summary)
+
+        # summary_result = self.summarize_content('%s: %s' % (speaker, content), depth, speaker, content_tokens = content_tokens)
+        # summary = self.cleanup_response(summary_result)
+        # summary_tokens = get_token_estimate(summary)
 
         ## Build episodic memory object
         eidetic_memory = {
@@ -286,7 +287,8 @@ class MemoryManager:
             "summary_tokens":int(summary_tokens),
             "next_sibling":None,
             "past_sibling":None,
-            "theme_links":[],
+            "theme_links":{},
+            "total_theme_count":0,
             "timestamp": timestamp,
             "timestring": timestring,
             "depth":int(depth)
@@ -319,29 +321,43 @@ class MemoryManager:
         theme_folderpath = self.__config['memory_management']['theme_stash_dir']
 
         ## Create new theme links for all lower memories and add links to theme objects
-        theme_links = list()
-        for theme_id in themes:
-            theme_filepath = '%s/%s.json' % (theme_folderpath, theme_id)
+        memory_links = {}
+        theme_links = {}
+        theme_keys = list(themes.keys())
+        for memory_id in memory_ids:
+                memory_links[memory_id] = {}
+                for theme_id in theme_keys:
+                    recurrence = themes[theme_id]['recurrence']
+                    link_obj = self.__themes.generate_theme_link(theme_id, memory_id, int(depth)-1, recurrence)
+                    if theme_id not in theme_links:
+                        theme_links[theme_id] = {}
+                    theme_links[theme_id][memory_id] = link_obj
+                    memory_links[memory_id][theme_id] = link_obj
+
+        theme_stash_dir = self.__config['memory_management']['theme_stash_dir']
+
+        total_theme_count = 0
+        for theme_id in theme_keys:
+            ## Load and update all Theme Objects
+            theme_filepath = '%s/%s.json' % (theme_stash_dir, theme_id)
             theme_obj = load_json(theme_filepath)
-            theme_memory_ids = map(lambda l: l['memory_id'], theme_obj['links'])
-            for memory_id in memory_ids:
-                if memory_id not in theme_memory_ids:
-                    memory_link = self.__themes.generate_theme_link(theme_id, memory_id, (int(depth)-1))
-                    theme_links.append(memory_link)
-                    theme_obj['links'].append(memory_link)
+
+            recurrence = themes[theme_id]['recurrence']
+            theme_obj['recurrence'] += recurrence
+            total_theme_count += recurrence
+            theme_obj['links'].update(theme_links[theme_id])
             save_json(theme_filepath, theme_obj)
 
-        ## Add theme links to lower memories
-        if len(theme_links) > 0:
-            memory_stash_folder = (self.__config['memory_management']['stash_folder_template'] % (int(depth)-1))
-            memory_folderpath = '%s/%s' % (self.__config['memory_management']['memory_stash_dir'], memory_stash_folder)
-            for memory_id in memory_ids:
-                memory_links = list(filter(lambda l: l['memory_id']==memory_id, theme_links))
-                if len(memory_links) > 0:
-                    memory_filepath = '%s/%s.json' % (memory_folderpath, memory_id)
-                    memory_obj = load_json(memory_filepath)
-                    memory_obj['theme_links'] += memory_links
-                    save_json(memory_filepath, memory_obj)
+        memory_stash_dir = self.__config['memory_management']['memory_stash_dir']
+        memory_stash_folder = self.__config['memory_management']['stash_folder_template'] % (int(depth)-1)
+        memory_dir = '%s/%s' % (memory_stash_dir, memory_stash_folder)
+        for memory_id in memory_ids:
+            ## Load and update all lower memories
+            memory_filepath = '%s/%s.json' % (memory_dir, memory_id)
+            memory_obj = load_json(memory_filepath)
+            memory_obj['theme_links'].update(memory_links[memory_id])
+            memory_obj['total_theme_count'] += total_theme_count
+            save_json(memory_filepath, memory_obj)
 
         ## Build episodic memory object
         episodic_memory = {
@@ -354,7 +370,8 @@ class MemoryManager:
             "anticipation_tokens": "",
             "next_sibling":None,
             "past_sibling":None,
-            "theme_links":[],
+            "theme_links":{},
+            "total_theme_count":0,
             "timestamp": timestamp,
             "timestring": timestring,
             "depth": int(depth)
@@ -474,167 +491,4 @@ class MemoryManager:
         namespace = self.__config['memory_management']['memory_namespace_template'] % depth
         save_vector_to_pinecone(vector, memory_id, metadata, namespace)
 
-#####################################################
-## THEMES ##
-## Theme objects are just an intuition I have about how these memories should be organized
-## Themes are extracted from episodic memory contents before they are summarized
-## Themes will be embedded
-##      If the embedding doesn't meet a query score falls under the threshold a new Theme object and pinecone vector will be created
-##      If the query score is over the query threshold then the Themes will merge with the pre-existing Theme object
-## Lower memories (depth of current memory - 1) are linked to the Theme via an ID on both entities
-## Later on, random memories will be selected from the Theme objects
-## New Theme elements will be extracted from the random sets and compared to their current Theme object.
-## The comparison will have one of three results:
-##      The new Themes match the Theme object the set was pulled from.
-##          The random memories' connection strength to the original Theme will be strengthened and all other connections will be weakened
-##      The new Themes match a different pre-existing Theme object.
-##          The random memories'connection strength to the original Theme and the new Theme will be strengthened
-##      The new Themes don't match any pre-existing Theme objects.
-##          The random memories'connection strength to the original Theme will be weakened
-## Each random memories selected will be disqualified for random selection for a period of time
-## This will replicate a reienforcement mechanism. Random selections will help extract memories with complex or multiple themes.
-
-    ## Get a list of themes from a summary of a memory and prepare the theme embedding objects
-    def extract_themes(self, content):
-        print('Extracting themes...')
-        extracted_themes = list()
-        ## Prompt for themes
-        themes_result = self.extract_content_themes(content)
-        ## Cleanup themes
-        themes, has_error = self.cleanup_theme_response(themes_result)
-        if has_error:
-            breakpoint('there was a thematic extraction error')
-            return extracted_themes
-        theme_namespace = self.__config['memory_management']['theme_namespace_template']
-        theme_folderpath = self.__config['memory_management']['theme_stash_dir']
-        theme_match_threshold = float(self.__config['memory_management']['theme_match_threshold'])
-        print('themes extracted...')
-        for theme in themes:
-            theme = str(theme)
-            vector = gpt3_embedding(theme)
-            theme_matches = query_pinecone(vector, 1, namespace=theme_namespace)
-            print('these are the theme matches:')
-            print(theme_matches)
-            if theme_matches is not None:
-                if len(theme_matches['matches']) > 0:
-                    ## There is a match so check the threshold
-                    match_score = float(theme_matches['matches'][0]['score'])
-                    print('the score for theme match {%s} was %s' % (theme, str(match_score)))
-                    if match_score >= theme_match_threshold:
-                        ## Theme score is above the threshold, update an existing theme
-                        existing_theme_id = theme_matches['matches'][0]['id']
-                        ## Load, update, and save theme
-                        theme_filepath = '%s/%s.json' % (theme_folderpath, existing_theme_id)
-                        existing_theme = load_json(theme_filepath)
-                        if theme not in existing_theme['themes']:
-                            existing_theme['themes'].append(theme)
-                            theme_string = ','.join(existing_theme['themes'])
-                            self.update_theme_vector(existing_theme_id, theme_string, theme_namespace)
-                            existing_theme['theme_count'] = len(existing_theme['themes'])
-                            save_json(theme_filepath, existing_theme)
-                        ## Add to extracted theme list
-                        if existing_theme_id not in extracted_themes:
-                            extracted_themes.append(existing_theme_id)
-                        continue
-            print('Making new themes')
-            ## The theme score falls under the threshold or there was no match, make a new theme
-            unique_id = str(uuid4())
-
-            
-            ## Add the theme to pinecone before making it so that similar themes in the current list can be merged
-            payload = [{'id': unique_id, 'values': vector}]
-            save_payload_to_pinecone(payload, theme_namespace)
-
-            ## Make theme and save it locally
-            new_theme = self.generate_theme(unique_id)
-            new_theme['themes'].append(theme)
-            new_theme['theme_count'] = 1
-            theme_filepath = '%s/%s.json' % (theme_folderpath, unique_id)
-            save_json(theme_filepath, new_theme)
-
-            ## Add to extracted theme list
-            extracted_themes.append(unique_id)
-
-        return extracted_themes
-
-    ## Get themes
-    def extract_content_themes(self, content):
-        prompt_name = 'memory_theme'
-        ## Load the prompt from a .json file
-        prompt_obj = load_json('%s/%s.json' % (self.__config['memory_management']['memory_prompts_dir'], prompt_name))
-        
-        temperature = prompt_obj['summary']['temperature']
-        response_tokens = prompt_obj['summary']['response_tokens']
-
-        ## Generate memory element
-        prompt_content = prompt_obj['summary']['system_message'] % (content)
-        prompt = [self.compose_gpt_message(prompt_content,'user')]
-        response, tokens = gpt_completion(prompt, temperature, response_tokens)
-        return response
-
-    ## Ensure the theme extraction has been cleaned up
-    def cleanup_theme_response(self, themes):
-        has_error = True
-        if type(themes) == list:
-                has_error = False
-                return themes, has_error
-        themes_obj = {}
-        try:
-            themes_obj = json.loads(themes)
-        except Exception as err:
-            print('ERROR: unable to parse the json object when extracting themes')
-            print('Value from GPT:\n\n%s' % themes)
-            breakpoint('\n\npausing...')
-            return [], has_error
-
-        dict_keys = list(themes_obj.keys())
-        if len(dict_keys) > 1:
-            print('ERROR: unknown response for theme extraction')
-            print('Value from GPT:\n\n%s' % themes)
-            print(themes_obj)
-            breakpoint('\n\npausing...')
-            return [], has_error
-        else:
-            key = dict_keys[0]
-            if type(themes_obj[key]) == list:
-                has_error = False
-                return themes_obj[key], has_error
-            else:
-                print('ERROR: unknown response for theme extraction')
-                print('Value from GPT:\n\n%s' % themes)
-                print(themes_obj)
-                breakpoint('\n\npausing...')
-                return [], has_error
-        return [], has_error
-
-    ## Load the theme, regenerate the embedding string, get embedding, and update the pinecone record
-    def update_theme_vector(self, theme_id, theme_string, namespace):
-        if not self.__pinecone_indexing_enabled:
-            return
-        vector = gpt3_embedding(theme_string)
-        update_response = update_pinecone_vector(theme_id, vector, namespace)
-
-    def generate_theme(self, theme_id):
-        timestamp = time()
-        timestring = timestamp_to_datetime(timestamp)
-        theme_obj = {
-            'id':theme_id,
-            'themes':[],
-            'theme_count':0,
-            'links':[],
-            'timestamp':timestamp,
-            'timestring':timestring,
-            'update_embedding':False
-        }
-        return theme_obj
-
-    def generate_theme_link(self, theme_id, memory_id, memory_depth):
-        link = {
-            'theme_id':theme_id,
-            'memory_id':memory_id,
-            'depth':int(memory_depth),
-            'weight':0.0,
-            'cooldown_count':0,
-            'repeat_theme_count':0
-        }
-        return link
+    # def memory_recall(self):

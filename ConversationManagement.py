@@ -167,6 +167,14 @@ class ConversationManager:
         conversation_body = self.__eidetic_memory_log.memory_string
         anticipation_body = self.__get_anticipation_response(conversation_body, prompt_obj)
 
+        ## Memory recall
+        recall_content = f"CONVERSATION NOTES:\n{notes_body}\nCONVERSATION LOG:\n{conversation_body}"
+        # recall_needed = self.recall_request(recall_content)
+        # recall_needed = True
+        # if recall_needed:
+        #     ## Thematic and direct search
+
+
         if self.__episodic_memory_log.memory_count > 0:
             prompt_instructions = 'conversation notes and conversation log'
             prompt_body = 'ANTICIPATED USER NEEDS:\n%s\nCONVERSATION NOTES:\n%s\nCONVERSATION LOG:\n%s' % (anticipation_body, notes_body, conversation_body)
