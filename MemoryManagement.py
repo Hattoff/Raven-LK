@@ -491,4 +491,25 @@ class MemoryManager:
         namespace = self.__config['memory_management']['memory_namespace_template'] % depth
         save_vector_to_pinecone(vector, memory_id, metadata, namespace)
 
-    # def memory_recall(self):
+    ## TODO: Raven will need a form of temporal recall as well
+        # Temporal categorization can mostly be done programatically but some aspects will need subprompt processing
+        # This will get tricky when it comes to decoding phrases like 'yesterday' or 'last time' considering each message
+        # By the User could be days apart but still consolidated into the same context
+
+    ## Memory recall happens in two phases (for now). Direct recall and thematic recall.
+    ## Direct recall is a vector search on depth-0 memories, almost like a keyword search.
+    ## Thematic recall is a vector search on Themes, which are generated in batches as memories transition from a lower depth to a higher depth.
+    ## The results from either recalls will affect the end result. I imagine the following scenarios:
+        # Direct and Theme recall produce strong candidates
+            # The sets are similar
+                # Choose the strongest candidates which match both sets
+            # The sets mixed
+                # Choose the strongest candidate from each set, even if they don't match
+            # The sets are different
+                # Choose the strongest candidate from a single set
+        # Direct xor Theme recall produce strong candidates
+            # Choose the stongest candidate
+        # Neither recalls produce strong candidates
+            # Recall was not successful, leave the section blank or notify Raven
+
+    def memory_recall(self):

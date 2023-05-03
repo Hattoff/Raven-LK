@@ -213,7 +213,6 @@ class ThemeManager:
             'timestamp':timestamp,
             'timestring':timestring
         }
-        ## TODO: Save the link record locally
         return link
 
     def compose_gpt_message(self, content, role, name=''):
@@ -228,17 +227,16 @@ class ThemeManager:
         ## Process of re-classification will be to select from various themes, get a random assortment of memories, get a random variation of memory ranges, and re-theme them. Link strength will need to be updated based on the results. We will calculate the Mediant for new weights. If that is too drastic then we can use a hyperparameter to adjust the rate of correction.
 
     def retheme(self):
-        ## Get all themes
-        theme_glob = glob.glob('./%s/*' % self.__config['memory_management']['theme_stash_dir'])
-        themes = list(map(lambda x: x.replace('\\','/'), list(theme_glob)))
-
+        themes = self._get_all_theme_paths()
         memory_base_path = self.__config['memory_management']['memory_stash_dir']
         memory_stash_template = self.__config['memory_management']['stash_folder_template']
 
-        ## For each theme get a random link and the adjacent memories
+        ## Get up to between 2 and 5 random themes, get a random link and the adjacent memories
         ## Recombine the memories and retheme
         ## Calculate new link weights
-        for theme_path in themes:
+        for t in range(0, min(len(themes), 5)):
+            theme_path = themes[random.randint(0,len(themes)-1)]
+            debug_message('Retheming in process...', self.debug_messages_enabled)
             memories = {}
             theme = load_json(theme_path)
             random_memory = {}
@@ -249,21 +247,22 @@ class ThemeManager:
             while not done:
                 random_link_id = random.choice(list(theme['links'].keys()))
                 random_link = theme['links'][random_link_id]
-                if random_link['cooldown_count'] == 0:  
+                if self._link_is_updateable(random_link):
                     print(random_link)
                     done = True
                 else:
                     attempt += 1
+                    ## Reload theme object because the cooldown was updated
+                    theme = load_json(theme_path)
                     if attempt > retry:
                         done = True
             
             if 'id' not in random_link:
-                print(f'Unable to get a memory link from theme {theme_path}')
+                debug_message(f'Unable to get a memory link from theme {theme_path}', self.debug_messages_enabled)
                 continue
             
             memory_id = random_link['memory_id']
-            memory_folder_path = memory_stash_template % int(random_link['depth'])
-            memory_path = '%s/%s/%s.json' % (memory_base_path, memory_folder_path, memory_id)
+            memory_path = self._get_memory_path(memory_id, random_link['depth'])
             random_memory = load_json(memory_path)
             memories[memory_id] = {'object':random_memory, 'path':memory_path}
 
@@ -282,24 +281,22 @@ class ThemeManager:
                 else:
                     search_direction = 'past_sibling'    
 
-            ## Get the up to 4 memories in the randomly chosen search direction
-            for i in range(3):
+            ## Get up to 2 or 5 memories in the randomly chosen search direction:
+            for i in range(random.randint(2, 5)):
                 memory_id = random_memory[search_direction]
                 if memory_id is None:
                     break
-                memory_path = '%s/%s/%s.json' % (memory_base_path, memory_folder_path, memory_id)
+                memory_path = self._get_memory_path(memory_id, random_link['depth'])
                 random_memory = load_json(memory_path)
                 memories[memory_id] = {'object':random_memory, 'path':memory_path}
 
             if len(memories) == 1:
-                print('Only one memory found. Skipping retheme.')
+                debug_message('Only one memory found. Skipping retheme.', self.debug_messages_enabled)
                 continue
 
-            ## Sort the list from oldest to most recent
+            ## Sort the list of memories from oldest to most recent
             sorted(memories.items(), key=lambda x: x[1]['object']['timestamp'], reverse=True)
             dict(memories)
-            print(list(map(lambda x: x[1]['object']['timestring'], memories.items())))
-
             memory_keys = list(memories.keys())
 
             ## Concatenate the content from the memories and retheme
@@ -308,9 +305,8 @@ class ThemeManager:
             for memory_id in memory_keys:
                 content += '%s\n' % (memories[memory_id]['object']['summary'])
 
+            ## Extract the themes from the content
             rethemes = self.extract_themes(content)
-            theme_namespace = self.__config['memory_management']['theme_namespace_template']
-            theme_folderpath = self.__config['memory_management']['theme_stash_dir']
             rethemes_keys = list(rethemes.keys())
             
             ## Create new theme links if the theme is new
@@ -330,37 +326,86 @@ class ThemeManager:
                             new_theme_links[theme_id] = {}
                         new_theme_links[theme_id][memory_id] = link_obj
                         new_memory_links[memory_id][theme_id] = link_obj
-                print('Memory %s currently has total theme count:%s, we will be adding stats for %s themes for a total of %s recurrences.' % (memory_id, str(memories[memory_id]['object']['total_theme_count']), str(len(rethemes_keys)), str(additional_recurrence_count)))
-                print(f'Memory {memory_id} has these links:')
-                print(memories[memory_id]['object']['theme_links'])
+                
+                debug_message('Memory %s currently has total theme count:%s, we will be adding stats for %s themes for a total of %s recurrences.' % (memory_id, str(memories[memory_id]['object']['total_theme_count']), str(len(rethemes_keys)), str(additional_recurrence_count)), self.debug_messages_enabled)
+
                 ## Update memory with retheme recurrances
                 total_theme_count = memories[memory_id]['object']['total_theme_count'] + additional_recurrence_count
                 memories[memory_id]['object']['total_theme_count'] = total_theme_count
-                print('Memory %s now has total theme count: %s'% (memory_id, str((memories[memory_id]['object']['total_theme_count']))))
-                print(f'Adding these links to memory {memory_id}:')
-                print(new_memory_links[memory_id])
-                ## Add new links to list
+
+                debug_message('Memory %s now has total theme count: %s'% (memory_id, str((memories[memory_id]['object']['total_theme_count']))), self.debug_messages_enabled)
+
+                ## Add new links to memory theme link list
                 memories[memory_id]['object']['theme_links'].update(new_memory_links[memory_id])
                 updated_link_ids = (memories[memory_id]['object']['theme_links']).keys()
                 for updated_link_id in updated_link_ids:
+                    ## Increment the recurrence of the rethemed links
                     if updated_link_id in rethemes_keys:
                         recurrence = rethemes[updated_link_id]['recurrence']
                         memories[memory_id]['object']['theme_links'][updated_link_id]['recurrence'] += recurrence
-                        
+                    
+                    ## Update the link weights and cooldown
+                    link_cooldown = int(self.__config['memory_management']['theme_link_cooldown'])
                     memories[memory_id]['object']['theme_links'][updated_link_id]['weight'] = memories[memory_id]['object']['theme_links'][updated_link_id]['recurrence'] / total_theme_count
+                    memories[memory_id]['object']['theme_links'][updated_link_id]['cooldown_count'] = link_cooldown
+                    ## Save update memory
                     save_json(memories[memory_id]['path'], memories[memory_id]['object'])
-                    updated_theme_path = ('./%s/%s.json') % (self.__config['memory_management']['theme_stash_dir'], updated_link_id)
+
+                    ## Update theme with updated link information
+                    updated_theme_path = self._get_theme_path(updated_link_id)
                     updated_theme = load_json(updated_theme_path)
                     updated_theme['links'].update({memory_id: memories[memory_id]['object']['theme_links'][updated_link_id]})
                     save_json(updated_theme_path, updated_theme)
-                
-                ## Update the weight of each theme link and update the recurrance if the theme was in the retheme list
-                # for update_theme_id in (memories[memory_id]['object']['theme_links']).keys():
-                    # if update_theme_id in rethemes_keys:
-                        
-
         return
+
+    ## Return a list of relative file paths for all themes in the theme stash
+    def _get_all_theme_paths(self):
+        theme_glob = glob.glob('./%s/*' % self.__config['memory_management']['theme_stash_dir'])
+        themes = list(map(lambda x: x.replace('\\','/'), list(theme_glob)))
+        return themes
     
+    ## Return file path for particular memory and depth
+    def _get_memory_path(self, memory_id, depth):
+        memory_base_path = self.__config['memory_management']['memory_stash_dir']
+        memory_stash_template = self.__config['memory_management']['stash_folder_template']
+        memory_folder_path = memory_stash_template % int(depth)
+        memory_path = '%s/%s/%s.json' % (memory_base_path, memory_folder_path, memory_id)
+        return memory_path
+
+    ## Return file path for particular theme
+    def _get_theme_path(self, theme_id):
+        theme_path = ('./%s/%s.json') % (self.__config['memory_management']['theme_stash_dir'], theme_id)
+        return theme_path
+
+    ## If link is on cooldown decrement the cooldown counter, update the memory and theme, and return False; otherwise return True
+    def _link_is_updateable(self, link):
+        theme_id = link['theme_id']
+        memory_id = link['memory_id']
+        ## If the link cooldown count is zero then it can be updated
+        if link['cooldown_count'] == 0:
+            return True
+        
+        ## Check if the link cooldown is less than zero. If it is then set it to zero. For now it will act as though it was not updatable.
+        if link['cooldown_count'] < 0:
+            debug_message('WARNING: Cooldown count on link: theme_id %s, memory_id: %s was less than zero. Setting it to zero.' % (theme_id, memory_id), self.debug_messages_enabled)
+            new_cooldown = 0
+        else:
+            new_cooldown = int(link['cooldown_count']) - 1
+        link['cooldown_count'] = new_cooldown
+
+        ## Update theme link and save
+        theme_path = self._get_theme_path(theme_id)
+        theme = load_json(theme_path)
+        theme['links'].update({memory_id: link})
+        save_json(theme_path, theme)
+
+        ## Update memory link and save
+        memory_path = self._get_memory_path(memory_id, link['depth'])
+        memory = load_json(memory_path)
+        memory['theme_links'].update({theme_id: link})
+        save_json(memory_path, memory)
+        return False
+
     ## Thematic Searching
         ## Process of thematic searching will be to search for themes of the current conversation, focusing on the last user message, getting a number of top results, getting the memories referenced in those results, and comparing the returned memories to the semantic search results and the theme link strengths. The results of these comparisons will produce several memories which can then be extended to their most recent neighbor for context, affixed with the timestamp, and summarized in contast with the user's message. This recall will then be added as a section in the conversation prompt.
     
