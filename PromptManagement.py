@@ -23,6 +23,11 @@ class _Prompt:
     def prompt_tokens(self):
         raise NotImplementedError()
 
+    ## Return system instructions to guide GPT's response. This will normally be used to request special formatting of the response or interface with Python.
+    @property
+    def system_instructions(self):
+        raise NotImplementedError()
+
     ## Return the file path where debug elements from this prompt can be saved
     @property
     def stash_path(self):
@@ -119,7 +124,39 @@ class _RecallExtraction(_Prompt):
     def __init__(self, temperature, response_tokens):
         super().__init__(temperature, response_tokens)
     def get_prompt(self, content):
-        prompt = f"Review the conversation notes and conversation log between RAVEN and USER then follow the INSTRUCTIONS below:{content}\nINSTRUCTIONS:\nGiven only the information provided, can you address USER's most recent message? If you can then respond with TRUE otherwise respond with FALSE."
+        prompt = f"Review the conversation log between RAVEN and USER then follow the INSTRUCTIONS.\n{content}\nINSTRUCTIONS:\nBased on the information in the conversation log, with emphasis on the USER's last message, is there sufficient detailed information to address everything in USER's last message?"
+        return prompt
+    @property
+    def prompt_tokens(self):
+        return get_token_estimate(self.get_prompt(' ')) + get_token_estimate(self.system_instructions())
+    @property
+    def stash_path(self):
+        return self.config['memory_management']['memory_recall_stash_dir']
+    @property
+    def system_instructions(self):
+        return 'You are in interface to a Python program. All responses must conform to the following JSON schema:\n{\n\t\"type\": \"object\",\n\t\"properties\": {\n\t\t\"sufficient_information\": {\n\t\t\t\"type\": \"boolean\"\n\t\t},\n\t\t\"reasoning\": {\n\t\t\t\"type\": \"string\"\n\t\t},\n\t\t\"required_information\": {\n\t\t\t\"type\": \"string\"\n\t\t}\n\t},\n}'
+
+## Prompt to extract themes with a focus on the last user message
+class _RecallThemeExtraction(_Prompt):
+    def __init__(self, temperature, response_tokens):
+        super().__init__(temperature, response_tokens)
+    def get_prompt(self, content):
+        prompt = f"Given the following chat log, identify the key themes of this information. Follow the INSTRUCTIONS at the end of the prompt.\n{content}\nINSTRUCTIONS:\nWith emphasis on the USER's last message, list the themes of the user's request. Format your response like this: {{\"themes\":[]}}"
+        return prompt
+    @property
+    def prompt_tokens(self):
+        return get_token_estimate(self.get_prompt(' '))
+    @property
+    def stash_path(self):
+        return self.config['memory_management']['theme_stash_dir']
+
+## Prompt to check if recalled information is relevant to the conversation
+class _RecallRelevancy(_Prompt):
+    def __init__(self, temperature, response_tokens):
+        super().__init__(temperature, response_tokens)
+    def get_prompt(self, recent_message, potential_goals, relevant_content):
+        content = f"MOST RECENT MESSAGE FROM USER:\n{recent_message}\nPOTENTIAL GOALS:\n{potential_goals}\nPOTENTIALLY RELEVANT INFORMATION:\n{relevant_content}"
+        prompt = f"Review the most recent message from USER, the potential goals, and the potentially relevant information, then follow the INSTRUCTIONS at the end of the prompt.\n{content}\nINSTRUCTIONS:\nBased only on the potentially relevant information, is there any pertinent information related to addressing the USER's most recent message or the potential goals?"
         return prompt
     @property
     def prompt_tokens(self):
@@ -127,6 +164,9 @@ class _RecallExtraction(_Prompt):
     @property
     def stash_path(self):
         return self.config['memory_management']['memory_recall_stash_dir']
+    @property
+    def system_instructions(self):
+        return 'You are in interface to a Python program. All responses must conform to the following JSON schema:\n{\n\t\"type\": \"object\",\n\t\"properties\": {\n\t\t\"pertinent_information_present\": {\n\t\t\t\"type\": \"boolean\"\n\t\t},\n\t\t\"reasoning\": {\n\t\t\t\"type\": \"string\"\n\t\t},\n\t\t\"relevant_information_ids\": {\n\t\t\t\"type\": \"array\",\n\t\t  \"items\": {\n\t\t\t\"type\": \"string\"\n\t\t  }\n\t\t}\n\t}\n}'
 
 ## Initialize all prompt objects with their temperature and response token count
 class PromptManager:
@@ -137,8 +177,10 @@ class PromptManager:
         self.EideticToEpisodicSummary = _EideticToEpisodicSummary(0.0, 500)
         self.EpisodicSummary = _EpisodicSummary(0.0, 500)
         self.ThemeExtraction = _ThemeExtraction(0.0, 250)
-        self.RecallExtraction = _RecallExtraction(0.0, 20)       
-
+        self.RecallExtraction = _RecallExtraction(0.7, 500)
+        self.RecallThemeExtraction = _RecallThemeExtraction(0.0,250)
+        self.RecallRelevancy = _RecallRelevancy(0.7, 500)
+        
     ## Conversation prompts will combine several sections and a special prompt, this estimates the number of tokens needed before any additional content is added
     @property
     def conversation_token_buffer(self):

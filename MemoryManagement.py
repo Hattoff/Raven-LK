@@ -269,7 +269,7 @@ class MemoryManager:
 
         content_tokens = get_token_estimate(content)
         
-        summary = ('%s: %s\n') % (speaker, content)
+        summary = ('%s: %s') % (speaker, content)
         summary_tokens = get_token_estimate(summary)
 
         # summary_result = self.summarize_content('%s: %s' % (speaker, content), depth, speaker, content_tokens = content_tokens)
@@ -494,7 +494,7 @@ class MemoryManager:
     ## TODO: Raven will need a form of temporal recall as well
         # Temporal categorization can mostly be done programatically but some aspects will need subprompt processing
         # This will get tricky when it comes to decoding phrases like 'yesterday' or 'last time' considering each message
-        # By the User could be days apart but still consolidated into the same context
+        # by the User could be days apart but still consolidated into the same context
 
     ## Memory recall happens in two phases (for now). Direct recall and thematic recall.
     ## Direct recall is a vector search on depth-0 memories, almost like a keyword search.
@@ -512,4 +512,171 @@ class MemoryManager:
         # Neither recalls produce strong candidates
             # Recall was not successful, leave the section blank or notify Raven
 
-    def memory_recall(self):
+    ## Return recalled memory ids, a boolean if recall was performed, and a boolean if the recall was successful was successful
+    def memory_recall(self, most_recent_message, conversation_log, conversation_notes):
+        debug_message('Beginning memory recall.', self.debug_messages_enabled)
+        if conversation_log == '' and conversation_notes == '':
+            breakpoint('Stopping memory recall...')
+            return [], False, False
+
+        ## Determine if memory recall is necessary:
+        recall_prompt = self.__prompts.RecallExtraction.get_prompt(conversation_log)
+        recall_response_tokens = self.__prompts.RecallExtraction.response_tokens
+        recall_temperature = self.__prompts.RecallExtraction.temperature
+        recall_instructions = self.__prompts.RecallExtraction.system_instructions
+
+        ## Save prompt and response
+        memory_recall_stash = self.__config['memory_management']['memory_recall_stash_dir']
+        timestamp = str(time())
+        recall_prompt_path = '%s/%s_recall_prompt.txt' % (memory_recall_stash, timestamp)
+        recall_response_path = '%s/%s_recall_response.txt' % (memory_recall_stash, timestamp)
+        save_file(recall_prompt_path, recall_prompt)
+
+        recall_messages = [self.compose_gpt_message(recall_instructions,'system'), self.compose_gpt_message(recall_prompt,'user')]
+        recall_element, recall_total_tokens = gpt_completion(recall_messages, recall_temperature, recall_response_tokens)
+        save_file(recall_response_path, recall_element)
+        
+        recall_obj = string_to_json(recall_element)
+        if 'sufficient_information' not in recall_obj:
+            debug_message('Issue processing memory recall extraction object.', self.debug_messages_enabled)
+            return [], True, False
+
+        if recall_obj['sufficient_information']:
+            debug_message('Stopping memory recall... again', self.debug_messages_enabled)
+            return [], True, True
+
+        ## Recall determined that more information is needed.
+        
+        ## Perform an explict search against the user's most recent message
+        recalled_hyde = recall_obj['reasoning'] + ('' if (recall_obj['required_information'] == '') else '\n%s' % recall_obj['required_information'])
+        relevant_result_obj = self.explicit_memory_recall(recalled_hyde, most_recent_message)
+
+        if 'pertinent_information_present' not in relevant_result_obj:
+            debug_message('Memory relevancy didn''t return any results...', self.debug_messages_enabled)
+            return [], True, False
+        elif relevant_result_obj['pertinent_information_present']:
+            return relevant_result_obj['relevant_information_ids'], True, True
+            
+        return [], True, False
+
+    ## TODO: If the explicit memory recall fails to produce results then thematic search and a lower threshold explicit search will be needed
+    def explicit_memory_recall(self, hyde_query, most_recent_message, threshold = 0.8):
+        relevant_obj = {}
+        relevant_results = ''
+
+        query_string = '%s\nUSER:\n%s' % (hyde_query, most_recent_message)
+        query_vector = gpt3_embedding(query_string)
+        query_namespace = (self.__config['memory_management']['memory_namespace_template']) % 0
+        query_results = query_pinecone(vector = query_vector, return_n = 10, namespace = query_namespace)
+
+        if query_results is not None:
+            if len(query_results['matches']) > 0:
+                relevant_content = ''
+                memory_stash_folder = self.__config['memory_management']['memory_stash_dir']
+                memory_depth_folder = (self.__config['memory_management']['stash_folder_template']) % 0
+
+                recalled_memories = {}
+                for match_memory in query_results['matches']:
+                    if match_memory['score'] < 0.8:
+                        continue
+                    memory_filepath = '%s/%s/%s.json' % (memory_stash_folder, memory_depth_folder, match_memory['id'])
+                    ## Load memory file
+                    memory_obj = load_json(memory_filepath)
+                    ## Get memory contents
+                    memory_id = memory_obj['id']
+                    memory_date = memory_obj['timestring']
+                    memory_content = memory_obj['content']
+                    memory_speaker = memory_obj['speaker']
+                    relevant_information_content = f"[\nINFORMATION ID: {memory_id}\nRECORDED ON: {memory_date}\nFROM: {memory_speaker}\nCONTENT: {memory_content}\n]\n"
+
+                    recalled_memories[memory_id] = memory_obj
+                    ## Append for relevant content body
+                    relevant_content += relevant_information_content
+                ## Determine if recalled memories are relevant:
+                relevant_prompt = self.__prompts.RecallRelevancy.get_prompt(most_recent_message, hyde_query, relevant_content)
+                relevant_response_tokens = self.__prompts.RecallRelevancy.response_tokens
+                relevant_temperature = self.__prompts.RecallRelevancy.temperature
+                relevant_instructions = self.__prompts.RecallRelevancy.system_instructions
+
+                ## Save prompt and response
+                memory_recall_stash = self.__config['memory_management']['memory_recall_stash_dir']
+                timestamp = str(time())
+                relevant_prompt_path = '%s/%s_relevant_prompt.txt' % (memory_recall_stash, timestamp)
+                relevant_response_path = '%s/%s_relevant_response.txt' % (memory_recall_stash, timestamp)
+                save_file(relevant_prompt_path, relevant_prompt)
+
+                relevant_messages = [self.compose_gpt_message(relevant_instructions,'system'), self.compose_gpt_message(relevant_prompt,'user')]
+                relevant_element, relevant_total_tokens = gpt_completion(relevant_messages, relevant_temperature, relevant_response_tokens)
+                save_file(relevant_response_path, relevant_element)
+
+                relevant_obj = string_to_json(relevant_element)
+        return relevant_obj
+
+
+
+# breakpoint('Here is the hyde:')
+        # print(recalled_hyde)
+        # breakpoint('Here is the response: ')
+        # print(explicit_query_results)
+        # breakpoint('press any key to continue...')
+
+        ## Prompt for themes
+        # themes_result = self.__themes.extract_recall_themes(conversation_log)
+        ## Cleanup themes
+        # themes, theme_error = self.__themes.cleanup_theme_response(themes_result)
+
+        ######################################################
+        # theme_error = False
+        # if theme_error:
+        #     breakpoint('there was a thematic extraction error')
+        # else:
+        #     # theme_query_string = ','.join(themes)
+        #     theme_query_string = explicit_query_string
+        #     theme_query_vector = gpt3_embedding(theme_query_string)
+        #     theme_query_namespace = self.__config['memory_management']['theme_namespace_template']
+        #     theme_query_results = query_pinecone(theme_query_vector, 10, theme_query_namespace)
+
+        #     breakpoint('Here is the theme search:')
+        #     print(theme_query_string)
+        #     breakpoint('Here is the response: ')
+        #     print(theme_query_results)
+        #     breakpoint('press any key to continue...')
+        # ## Analyze the search results
+        # theme_memory_ids = []
+        # theme_ids = {}
+        # theme_links = []
+        # ## Each theme will be opened, memory ids extracted, secondary search on all memory ids, top results chosen.
+        # if not theme_error and theme_query_results is not None:
+        #     if len(theme_query_results['matches']) > 0:
+        #         for theme_match in theme_query_results['matches']:
+        #             ## Cache the theme ids, scores, and objects
+        #             match_score = float(theme_match['score'])
+        #             theme_id = theme_match['id']
+        #             theme_ids[theme_id] = {}
+        #             theme_ids[theme_id]['score'] = match_score
+
+        #             ## Load theme files
+        #             theme_filepath = self.__themes.get_theme_path(theme_id)
+        #             theme_obj = load_json(theme_filepath)
+        #             theme_ids[theme_id]['object'] = theme_obj
+        #             for mem_id in theme_obj['links']:
+        #                 theme_links.append(theme_obj['links'][mem_id])
+        #         theme_memory_ids = list(set(map(lambda m: m['memory_id'], theme_links)))
+        
+        # explicit_memory_ids = []
+        # if explicit_query_results is not None:
+        #         if len(explicit_query_results['matches']) > 0:
+        #             explicit_memory_ids = list(set(map(lambda m: m['id'], explicit_query_results['matches'])))
+        #             ## These memory ids will be directly compared to the themeatic search
+
+        # # breakpoint('Done recalling memories. Here are the intersection ids...')
+        # breakpoint('Done recalling memories.')
+        # # intersection_ids = list((set(theme_links)).intersection(set(explicit_memory_ids)))
+        # # print(intersection_ids)
+        # breakpoint('Here are the theme links...')
+        # print(theme_links)
+        # breakpoint('Here are the theme memory ids...')
+        # print(theme_memory_ids)
+        # breakpoint('Here are the explicit memory ids...')
+        # print(explicit_query_results)
+        # breakpoint('press any key to continue...')

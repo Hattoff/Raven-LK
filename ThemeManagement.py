@@ -132,6 +132,16 @@ class ThemeManager:
         response, tokens = gpt_completion(message, temperature, response_tokens)
         return response
 
+    ## Get themes
+    def extract_recall_themes(self, content):
+        prompt = self.__prompts.RecallThemeExtraction.get_prompt(content)
+        temperature = self.__prompts.ThemeExtraction.temperature
+        response_tokens = self.__prompts.ThemeExtraction.response_tokens
+
+        message = [self.compose_gpt_message(prompt,'user')]
+        response, tokens = gpt_completion(message, temperature, response_tokens)
+        return response
+
     ## Ensure the theme extraction has been cleaned up
     def cleanup_theme_response(self, themes):
         has_error = True
@@ -352,7 +362,7 @@ class ThemeManager:
                     save_json(memories[memory_id]['path'], memories[memory_id]['object'])
 
                     ## Update theme with updated link information
-                    updated_theme_path = self._get_theme_path(updated_link_id)
+                    updated_theme_path = self.get_theme_path(updated_link_id)
                     updated_theme = load_json(updated_theme_path)
                     updated_theme['links'].update({memory_id: memories[memory_id]['object']['theme_links'][updated_link_id]})
                     save_json(updated_theme_path, updated_theme)
@@ -373,7 +383,7 @@ class ThemeManager:
         return memory_path
 
     ## Return file path for particular theme
-    def _get_theme_path(self, theme_id):
+    def get_theme_path(self, theme_id):
         theme_path = ('./%s/%s.json') % (self.__config['memory_management']['theme_stash_dir'], theme_id)
         return theme_path
 
@@ -394,7 +404,7 @@ class ThemeManager:
         link['cooldown_count'] = new_cooldown
 
         ## Update theme link and save
-        theme_path = self._get_theme_path(theme_id)
+        theme_path = self.get_theme_path(theme_id)
         theme = load_json(theme_path)
         theme['links'].update({memory_id: link})
         save_json(theme_path, theme)

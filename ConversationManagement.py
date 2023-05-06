@@ -90,6 +90,10 @@ class ConversationManager:
         @property
         def memories(self):
             return self.__memories.copy()
+        
+        @property
+        def memory_ids(self):
+            return list(map(lambda x: x[0], self.__memories))
 
     def make_required_directories(self):
         for d in self.__config['required_directories']:
@@ -166,22 +170,42 @@ class ConversationManager:
         notes_body = self.__episodic_memory_log.memory_string
         conversation_body = self.__eidetic_memory_log.memory_string
         anticipation_body = self.__get_anticipation_response(conversation_body, prompt_obj)
+        
+        recalled_body = ''
+        if self.__eidetic_memory_log.memory_count > 0 and self.__episodic_memory_log.memory_count > 0:
+            most_recent_memory = (self.__eidetic_memory_log.memories[self.__eidetic_memory_log.memory_count-1])[0]
+            most_recent_message = most_recent_memory['content']
+            
+            recalled_ids, memory_recall_performed, memory_recall_successful = self.__memory_manager.memory_recall(most_recent_message, conversation_body, notes_body)
+            active_memory_ids = self.__eidetic_memory_log.memory_ids
+            
+            if len(recalled_ids) > 0:
+                memory_stash_folder = self.__config['memory_management']['memory_stash_dir']
+                memory_depth_folder = (self.__config['memory_management']['stash_folder_template']) % 0
 
-        ## Memory recall
-        recall_content = f"CONVERSATION NOTES:\n{notes_body}\nCONVERSATION LOG:\n{conversation_body}"
-        # recall_needed = self.recall_request(recall_content)
-        # recall_needed = True
-        # if recall_needed:
-        #     ## Thematic and direct search
+                for recalled_memory_id in recalled_ids:
+                    if recalled_memory_id in active_memory_ids:
+                        continue
+                    memory_filepath = '%s/%s/%s.json' % (memory_stash_folder, memory_depth_folder, recalled_memory_id)
+                    recalled_memory_obj = load_json(memory_filepath)
+                    recalled_memory_date = recalled_memory_obj['timestring']
+                    recalled_memory_content = recalled_memory_obj['content']
+                    recalled_memory_speaker = recalled_memory_obj['speaker']
+                    recalled_memory_summary = f"[\nRECORDED ON: {recalled_memory_date}\nFROM: {recalled_memory_speaker}\nCONTENT: {recalled_memory_content}\n]\n"
+                    recalled_body += recalled_memory_summary
 
+        prompt_instruction_sections = ['conversation log']
+        prompt_body = 'ANTICIPATED USER NEEDS:\n%s\n' % anticipation_body
+        if recalled_body != '':
+            prompt_instruction_sections.append('conversation history')
+            prompt_body +='CONVERSATION HISTORY:\n%s\n' % recalled_body
 
         if self.__episodic_memory_log.memory_count > 0:
-            prompt_instructions = 'conversation notes and conversation log'
-            prompt_body = 'ANTICIPATED USER NEEDS:\n%s\nCONVERSATION NOTES:\n%s\nCONVERSATION LOG:\n%s' % (anticipation_body, notes_body, conversation_body)
-        else:
-            prompt_instructions = 'conversation log'
-            prompt_body = 'ANTICIPATED USER NEEDS:\n%s\nCONVERSATION LOG:\n%s' % (anticipation_body, conversation_body)
-
+            prompt_instruction_sections.append('conversation notes')
+            prompt_body +='CONVERSATION NOTES:\n%s\n' % notes_body
+        prompt_body += 'CONVERSATION LOG:\n%s' % conversation_body
+        
+        prompt_instructions = ' and '.join(prompt_instruction_sections)
         response = self.__get_conversation_response(prompt_body, prompt_instructions, prompt_obj)
         
         return response

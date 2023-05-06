@@ -30,6 +30,9 @@ def save_json(filepath, payload):
     with open(filepath, 'w', encoding='utf-8') as outfile:
         json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
 
+def string_to_json(content):
+    return json.loads(content)
+
 #####################################################
 
 config = configparser.ConfigParser()
@@ -56,7 +59,9 @@ def timestamp_to_datetime(unix_time):
                 ## TikToken ##
 def get_token_estimate(content):
     content = content.encode(encoding='ASCII',errors='ignore').decode()
-    encoding = tiktoken.encoding_for_model(str(config['open_ai']['model']))
+    # encoding = tiktoken.encoding_for_model(str(config['open_ai']['model']))
+    ## TODO: TikToken doesn't know about the new model names, will need to hard code for now.
+    encoding = tiktoken.encoding_for_model('gpt-3.5-turbo-0301')
     tokens = encoding.encode(content)
     token_count = len(tokens)
     return token_count
@@ -152,5 +157,6 @@ def save_vector_to_pinecone(vector, unique_id, metadata, namespace=""):
 def update_pinecone_vector(id, vector, namespace):
     if not pinecone_indexing_enabled:
         return
+    update_response = {}
     update_response = vector_db.update(id=id,values=vector,namespace=namespace)
     return update_response
