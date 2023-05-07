@@ -5,6 +5,7 @@ import glob
 import datetime
 from uuid import uuid4
 import re
+import sqlite3
 from ThemeManagement import ThemeManager
 from PromptManagement import PromptManager
 from UtilityFunctions import *
@@ -124,17 +125,17 @@ class MemoryManager:
                 memory_id = memory['id']
                 past_sibling_id = self.__memories[memory_count-1]['id']
                 self.update_past_sibling(memory_id, past_sibling_id)
-                memory['past_sibling'] = past_sibling_id
+                memory['past_sibling_id'] = past_sibling_id
             elif self.__last_memory_id is not None:
                 memory_id = memory['id']
                 past_sibling_id = self.__last_memory_id
                 self.update_past_sibling(memory_id, past_sibling_id)
-                memory['past_sibling'] = past_sibling_id
+                memory['past_sibling_id'] = past_sibling_id
                 self.__last_memory_id = None
             self.__memories.append(memory)
             self.__current_memory_ids.append(memory['id'])
             self.parent_local_child_memories(memory)
-            self.save_memory_locally(memory)
+            self.stash_memory(memory)
 
         ## Before adding a memory, check to see if there will be space with next memory.
         def has_memory_space(self, next_number_of_tokens):
@@ -161,17 +162,13 @@ class MemoryManager:
             sibling_path = '%s/%s.json' % (self.__memory_dir, past_sibling_id)
             if os.path.isfile(sibling_path):
                 content = load_json(sibling_path)
-                content['next_sibling'] = memory_id
+                content['next_sibling_id'] = memory_id
                 save_json(sibling_path, content)
 
-        ## Stash the memory in the appropriate folder locally
-        def save_memory_locally(self, memory):
+        ## Stash the memory in the sql database
+        def stash_memory(self, memory):
             debug_message('saving memory locally...', self.debug_messages_enabled)
-            memory_id = memory['id']
-            memory_path = '%s/%s.json' % (self.__memory_dir, memory_id)
-            if not os.path.exists(self.__memory_dir):
-                os.mkdir(self.__memory_dir)
-            save_json(memory_path, memory)
+            sql_insert_row('Memories', 'id', memory)
 
         ## Update all lower-depth memories with higher-depth memory id
         def parent_local_child_memories(self, memory):
@@ -179,13 +176,38 @@ class MemoryManager:
             memory_id = memory['id']
             if self.__depth > 0 in memory:
                 child_ids = list(memory['lower_memory_ids'])
-                for id in child_ids:
-                    child_path = '%s/%s.json' % (self.__memory_dir, id)
-                    if os.path.isfile(child_path):
-                        content = load_json(child_path)
-                        content['episodic_parent_id'] = memory_id
-                        save_json(child_path, content)
+                children_memories = sql_query_by_ids('Memories', 'id', child_ids)
+                for child_memory in children_memories:
+                    child_memory['episodic_parent_id'] = memory_id
+                    sql_update_row('Memories','id',child_memory)
                     
+    ## Memories all have the following form:
+    def __memory_template(self):
+        memory = {
+            "id": None,
+            "depth": -1,
+            "speaker": None,
+            "content": "",
+            "content_tokens": -1,
+            "summary": "",
+            "summary_tokens":-1,
+            "episodic_parent_id":"",
+            "episodic_children_ids":[],
+            "past_sibling_id":None,
+            "next_sibling_id":None,
+            "theme_link_ids":[],
+            "total_themes":-1,
+            "created_on":"",
+            "modified_on":""
+        }
+        return memory
+    
+    def __create_memory_object(self, **kwargs):
+        memory = self.__memory_template()
+        for key, value in kwargs.items():
+            if key in memory:
+                memory[key] = value
+        return memory
 
     ## Return the number of memories of a given cache
     def get_cache_memory_count(self,depth):
@@ -277,22 +299,18 @@ class MemoryManager:
         # summary_tokens = get_token_estimate(summary)
 
         ## Build episodic memory object
-        eidetic_memory = {
-            "id": unique_id,
-            "episodic_parent_id":"",
-            "speaker": speaker,
-            "content": content,
-            "content_tokens":content_tokens,
-            "summary": summary,
-            "summary_tokens":int(summary_tokens),
-            "next_sibling":None,
-            "past_sibling":None,
-            "theme_links":{},
-            "total_theme_count":0,
-            "timestamp": timestamp,
-            "timestring": timestring,
-            "depth":int(depth)
-        }
+        eidetic_memory = self.__create_memory_object(
+            id=unique_id,
+            depth=int(depth),
+            speaker=speaker,
+            content=content,
+            content_tokens=content_tokens,
+            summary=summary,
+            summary_tokens=int(summary_tokens),
+            total_themes=0,
+            create_date=timestamp,
+            modify_date=timestamp        
+        )
         return eidetic_memory, summary_tokens
 
     ## Assemble an eposodic memory from a collection of eidetic or lower-depth episodic memories
@@ -360,22 +378,16 @@ class MemoryManager:
             save_json(memory_filepath, memory_obj)
 
         ## Build episodic memory object
-        episodic_memory = {
-            "id": unique_id,
-            "episodic_parent_id":"",
-            "lower_memory_ids": memory_ids,
-            "summary": summary,
-            "summary_tokens":int(summary_tokens),
-            "anticipation": "",
-            "anticipation_tokens": "",
-            "next_sibling":None,
-            "past_sibling":None,
-            "theme_links":{},
-            "total_theme_count":0,
-            "timestamp": timestamp,
-            "timestring": timestring,
-            "depth": int(depth)
-        }
+        episodic_memory = self.__create_memory_object(
+            id=unique_id,
+            depth=int(depth),
+            summary=summary,
+            summary_tokens=int(summary_tokens),
+            episodic_children_ids=memory_ids,
+            total_theme_count=0,
+            create_date=timestamp,
+            modify_date=timestamp
+        )
         return episodic_memory, summary_tokens
 
     ## Strip away unwanted characters from gpt response
@@ -572,16 +584,20 @@ class MemoryManager:
         if query_results is not None:
             if len(query_results['matches']) > 0:
                 relevant_content = ''
-                memory_stash_folder = self.__config['memory_management']['memory_stash_dir']
-                memory_depth_folder = (self.__config['memory_management']['stash_folder_template']) % 0
+                # memory_stash_folder = self.__config['memory_management']['memory_stash_dir']
+                # memory_depth_folder = (self.__config['memory_management']['stash_folder_template']) % 0
 
                 recalled_memories = {}
                 for match_memory in query_results['matches']:
                     if match_memory['score'] < 0.8:
                         continue
-                    memory_filepath = '%s/%s/%s.json' % (memory_stash_folder, memory_depth_folder, match_memory['id'])
+                    # memory_filepath = '%s/%s/%s.json' % (memory_stash_folder, memory_depth_folder, match_memory['id'])
                     ## Load memory file
-                    memory_obj = load_json(memory_filepath)
+                    memories = sql_query_by_ids('Memories', 'id', [match_memory['id']])
+                    if len(memories) == 0:
+                        breakpoint(f"Unable to find memory {match_memory['id']}")
+                        continue
+                    memory_obj = memories[0]
                     ## Get memory contents
                     memory_id = memory_obj['id']
                     memory_date = memory_obj['timestring']
