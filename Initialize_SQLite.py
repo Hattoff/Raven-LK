@@ -16,23 +16,7 @@ CREATE TABLE IF NOT EXISTS Memories (
     episodic_children_ids TEXT,
     past_sibling_id TEXT,
     next_sibling_id TEXT,
-    theme_link_ids TEXT,
     total_themes INTEGER,
-    created_on TEXT,
-    modified_on TEXT
-)
-''')
-
-## Theme Links Table
-conn.execute('''
-CREATE TABLE IF NOT EXISTS Theme_Links (
-    id TEXT PRIMARY KEY NOT NULL,
-    memory_id TEXT,
-    theme_id TEXT,
-    weight REAL,
-    recurrence INTEGER,
-    depth INTEGER,
-    cooldown INTEGER,
     created_on TEXT,
     modified_on TEXT
 )
@@ -42,25 +26,40 @@ CREATE TABLE IF NOT EXISTS Theme_Links (
 conn.execute('''
 CREATE TABLE IF NOT EXISTS Themes (
     id TEXT PRIMARY KEY NOT NULL,
-    themes TEXT,
+    phrases TEXT,
     theme_history TEXT,
     created_on TEXT,
     modified_on TEXT
 )
 ''')
 
-## Theme History Table
+## Theme Links Table
 conn.execute('''
-CREATE TABLE IF NOT EXISTS Theme_History (
+CREATE TABLE IF NOT EXISTS Theme_Links (
     id TEXT PRIMARY KEY NOT NULL,
+    depth INTEGER,
+    memory_id TEXT,
     theme_id TEXT,
-    phrase TEXT,
-    iteration INTEGER,
-    similarity REAL,
+    weight REAL,
+    recurrence INTEGER,
+    cooldown INTEGER,
     created_on TEXT,
     modified_on TEXT
 )
 ''')
+
+## Theme History Table
+# conn.execute('''
+# CREATE TABLE IF NOT EXISTS Theme_History (
+#     id TEXT PRIMARY KEY NOT NULL,
+#     theme_id TEXT,
+#     phrase TEXT,
+#     iteration INTEGER,
+#     similarity REAL,
+#     created_on TEXT,
+#     modified_on TEXT
+# )
+# ''')
 
 conn.commit()
 

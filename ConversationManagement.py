@@ -11,8 +11,8 @@ class ConversationManager:
     def __init__(self):
         self.__config = get_config()
         self.__memory_manager = MemoryManager()
-        self.__eidetic_memory_log = self.MemoryLog(1200,4)
-        self.__episodic_memory_log = self.MemoryLog(1200,4)
+        self.__eidetic_memory_log = self.MemoryLog(750,4)
+        self.__episodic_memory_log = self.MemoryLog(750,4)
         self.make_required_directories()
 
     class MemoryLog:
@@ -50,7 +50,7 @@ class ConversationManager:
                 ## Rebuild the memory list with a minumum number of memories, but continue to add memories until token count is reached
                 memories = self.__memories.copy()
                 ## Sort list so most recent memories are first
-                memories = sorted(memories,key=lambda x: x[0]['timestamp'],reverse=True)
+                memories = sorted(memories,key=lambda x: x[0]['created_on'],reverse=True)
                 self.__memories.clear()
                 token_count = 0
                 for m in memories:

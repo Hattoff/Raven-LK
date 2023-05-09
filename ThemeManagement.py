@@ -44,9 +44,53 @@ class ThemeManager:
         self.debug_messages_enabled = True
         self.__prompts = PromptManager()
 
+    def __theme_template(self):
+        theme = {
+            "id": None,
+            "phrases":[],
+            "theme_history_ids":[],
+            "created_on":"",
+            "modified_on":""
+        }
+        return theme
+
+    def __theme_history_template(self):
+        theme_history = {
+            "id": None,
+            "theme_id":None,
+            "phrase":[],
+            "iteration":-1,
+            "similarity":-1.0,
+            "created_on":"",
+            "modified_on":""
+        }
+        return theme_history
+
+    def __theme_link_template(self):
+        theme_link = {
+            "id": None,
+            "depth":-1,
+            "memory_id":None,
+            "theme_id":None,
+            "weight":-1.0,
+            "recurrence":-1,
+            "cooldown":-1,
+            "created_on":"",
+            "modified_on":""
+        }
+        return theme_link
+    
+    ## Build a theme object and pupulate it with none, some, or all columns/attributes
+    def create_theme_object(self, **kwargs):
+        return create_row_object('Themes', **kwargs)
+    
+    def create_theme_link_object(self, **kwargs):
+        return create_row_object('Theme_Links', **kwargs)
+
     ## Get a list of themes from a summary of a memory and prepare the theme embedding objects
     def extract_themes(self, content):
         print('Extracting themes...')
+        timestamp = str(time())
         extracted_themes = {}
         ## Prompt for themes
         themes_result = self.extract_content_themes(content)
@@ -56,13 +100,13 @@ class ThemeManager:
             breakpoint('there was a thematic extraction error')
             return extracted_themes
         theme_namespace = self.__config['memory_management']['theme_namespace_template']
-        theme_folderpath = self.__prompts.ThemeExtraction.stash_path
         theme_match_threshold = float(self.__config['memory_management']['theme_match_threshold'])
+        # theme_folderpath = self.__prompts.ThemeExtraction.stash_path
         print('themes extracted...')
-        for theme in themes:
-            theme = str(theme)
+        for phrase in themes:
+            phrase = (str(phrase)).lower()
             ## Embed this theme and check for the most similar Theme Object
-            vector = gpt3_embedding(theme)
+            vector = gpt3_embedding(phrase)
             theme_matches = query_pinecone(vector, 1, namespace=theme_namespace)
             if theme_matches is not None:
                 if len(theme_matches['matches']) > 0:
@@ -72,27 +116,33 @@ class ThemeManager:
                         ## Theme score is above the threshold, update an existing theme
                         existing_theme_id = theme_matches['matches'][0]['id']
                         ## Load, update, and save theme
-                        theme_filepath = '%s/%s.json' % (theme_folderpath, existing_theme_id)
-                        existing_theme = load_json(theme_filepath)
-                        if theme not in existing_theme['themes']:
-                            ## Add new theme to the themes list
-                            existing_theme['themes'].append(theme)
-                            ## Start tracking the history of this newly added theme
-                            existing_theme['theme_history'][theme] = [self.generate_theme_history(0, match_score)]
-                            ## Embed the new collection of themes
-                            new_theme_string = ','.join(existing_theme['themes'])
-                            new_theme_vector = gpt3_embedding(new_theme_string)
+                        query_themes = sql_query_by_ids('Themes','id',existing_theme_id)
+                        if len(query_themes) == 0:
+                            print(query_themes)
+                            print(type(existing_theme_id))
+                            breakpoint(f"Issue fetching existing theme from database: {existing_theme_id}")
+                            continue
+                        existing_theme = query_themes[0]
+                        if phrase not in existing_theme['phrases']:
+                            ## Add new phrase to the themes list
+                            existing_theme['phrases'].append(phrase)
+                             ## Start tracking the history of this newly added theme
+                            if existing_theme['theme_history'] is None:
+                                existing_theme['theme_history'] = {}
+                            existing_theme['theme_history'].update({phrase: [self.generate_theme_history(0, match_score)]})
+                            ## Embed the new collection of phrases
+                            new_phrases_string = ','.join(existing_theme['phrases'])
+                            new_phrases_vector = gpt3_embedding(new_phrases_string)
                             ## Update existing pinecone record's vector
-                            update_pinecone_vector(existing_theme_id, new_theme_vector, theme_namespace)
-                            existing_theme['theme_count'] = len(existing_theme['themes'])
+                            update_pinecone_vector(existing_theme_id, new_phrases_vector, theme_namespace)
                         else:
                             ## Get the existing theme history, the count elements is the new iteration number
-                            history_count = len(existing_theme['theme_history'][theme])
+                            history_count = len(existing_theme['theme_history'][phrase])
                             ## Track the match_score of this theme
-                            existing_theme['theme_history'][theme].append(self.generate_theme_history(history_count, match_score))
-                        
+                            existing_theme['theme_history'][phrase].append(self.generate_theme_history(history_count, match_score))
+
                         ## Update the existing Theme Object
-                        save_json(theme_filepath, existing_theme)
+                        sql_update_row('Themes','id', existing_theme)
                             
                         ## Add to extracted theme id to list and keep track of how many times a similar theme has been extracted
                         if existing_theme_id not in extracted_themes:
@@ -107,15 +157,16 @@ class ThemeManager:
             payload = [{'id': unique_id, 'values': vector}]
             save_payload_to_pinecone(payload, theme_namespace)
 
-            ## Make theme and save it locally
-            new_theme = self.generate_theme(unique_id)
-            ## Add the theme to the list
-            new_theme['themes'].append(theme)
-            new_theme['theme_count'] = 1
+            ## Make theme and save it to the database
             ## Initialize the theme history tracking. The similarity score is 1 (100%)
-            new_theme['theme_history'][theme] = [self.generate_theme_history(0, 1.0)]
-            theme_filepath = '%s/%s.json' % (theme_folderpath, unique_id)
-            save_json(theme_filepath, new_theme)
+            new_theme = self.create_theme_object(
+                    id=unique_id,
+                    phrases=[phrase],
+                    theme_history={phrase: [self.generate_theme_history(0, 1.0)]},
+                    created_on=timestamp,
+                    modified_on=timestamp
+                )
+            sql_insert_row('Themes','id', new_theme)
 
             ## Add to extracted theme list
             extracted_themes[unique_id] = {'recurrence':1, 'new_theme':True}
@@ -176,25 +227,7 @@ class ThemeManager:
                 breakpoint('\n\npausing...')
                 return [], has_error
         return [], has_error
-    
-    ## Create a Theme object and save it locally.
-    def generate_theme(self, theme_id, recurrence = 0):
-        timestamp = time()
-        timestring = timestamp_to_datetime(timestamp)
-        theme_obj = {
-            'id':theme_id,
-            'themes':[],
-            'theme_count':0,
-            'links':{},
-            'theme_history':{},
-            'recurrence': int(recurrence),
-            'timestamp':timestamp,
-            'timestring':timestring,
-            'update_embedding':False
-        }
-        ## TODO: Save the Theme object locally
-        return theme_obj
-    
+        
     ## Object used to track theme history. I intend to use this to analyze theme decoherence.
     def generate_theme_history(self, iteration = 0, similarity = 0.0):
         timestamp = time()
@@ -219,7 +252,7 @@ class ThemeManager:
             'depth':int(memory_depth),
             'recurrence': int(recurrence),
             'weight':0.0,
-            'cooldown_count':0,
+            'cooldown':0,
             'timestamp':timestamp,
             'timestring':timestring
         }
@@ -237,135 +270,139 @@ class ThemeManager:
         ## Process of re-classification will be to select from various themes, get a random assortment of memories, get a random variation of memory ranges, and re-theme them. Link strength will need to be updated based on the results. We will calculate the Mediant for new weights. If that is too drastic then we can use a hyperparameter to adjust the rate of correction.
 
     def retheme(self):
-        themes = self._get_all_theme_paths()
-        memory_base_path = self.__config['memory_management']['memory_stash_dir']
-        memory_stash_template = self.__config['memory_management']['stash_folder_template']
+        ## Query all themes; we will choose from this list at random
+        all_themes_query = sql_query_by_ids('Themes', 'id')
+        if len(all_themes_query) <= 0:
+            debug_message('No themes found, skipping retheme.')
+            return
+        all_themes = {x["id"]: x for x in all_themes_query}
 
-        ## Get up to between 2 and 5 random themes, get a random link and the adjacent memories
-        ## Recombine the memories and retheme
-        ## Calculate new link weights
-        for t in range(0, min(len(themes), 5)):
-            theme_path = themes[random.randint(0,len(themes)-1)]
-            debug_message('Retheming in process...', self.debug_messages_enabled)
+        ## Get up to between 2 and 5 random themes to begin the process
+        for t in range(0, min(len(all_themes.keys()), 5)):
+            ## Get a random theme from the all_themes_list
+            random_theme_id = random.choice(list(all_themes.keys()))
+            debug_message(f"Retheming of theme {random_theme_id} in process...", self.debug_messages_enabled)
+            random_theme = all_themes[random_theme_id]
+            
+            ## Pre-define some objects to avoid errors
             memories = {}
-            theme = load_json(theme_path)
             random_memory = {}
+            random_link = {}
+            ## Limit retry attempts to 4
             retry = 4
             attempt = 0
             done = False
-            random_link = {}
             while not done:
-                random_link_id = random.choice(list(theme['links'].keys()))
-                random_link = theme['links'][random_link_id]
-                if self._link_is_updateable(random_link):
-                    print(random_link)
+                ## Get all link ids associated with the random theme
+                all_theme_links = {x["id"]: x for x in sql_query_by_ids('Theme_Links', 'theme_id', random_theme_id)}
+                ## Choose a link id at random
+                random_link_id = random.choice(list(all_theme_links.keys()))
+                random_link = all_theme_links[random_link_id]
+                if self.__link_is_updateable(random_link):
                     done = True
                 else:
                     attempt += 1
-                    ## Reload theme object because the cooldown was updated
-                    theme = load_json(theme_path)
+                    ## Reload theme link because the cooldown was updated when it was checked
+                    all_theme_links[random_link_id] = (sql_query_by_ids('Theme_Links', 'id', random_link_id))[0]
+                    ## Clear out the random_link object in case we don't get an updatable link
+                    random_link = {}
                     if attempt > retry:
                         done = True
             
+            ## Check to be sure a random link was chosen
             if 'id' not in random_link:
-                debug_message(f'Unable to get a memory link from theme {theme_path}', self.debug_messages_enabled)
+                debug_message(f'Unable to get a memory link from theme {random_theme_id}', self.debug_messages_enabled)
                 continue
             
-            memory_id = random_link['memory_id']
-            memory_path = self._get_memory_path(memory_id, random_link['depth'])
-            random_memory = load_json(memory_path)
-            memories[memory_id] = {'object':random_memory, 'path':memory_path}
+            random_memory_id = random_link['memory_id']
+            random_memory = (sql_query_by_ids('Memories', 'id', random_memory_id))[0]
+            ## Keep track of all memories set to be rethemed
+            random_memory_set = {}
+            random_memory_set[random_memory_id] = random_memory
 
             ## Get a random bool and set the search direction
             coin_toss = bool(random.getrandbits(1))
-
             if coin_toss:
-                search_direction = 'next_sibling'
+                search_direction = 'next_sibling_id'
             else:
-                search_direction = 'past_sibling'
+                search_direction = 'past_sibling_id'
             
             ## If that direction ends early then reverse the direction
             if random_memory[search_direction] is None:
                 if not coin_toss:
-                    search_direction = 'next_sibling'
+                    search_direction = 'next_sibling_id'
                 else:
-                    search_direction = 'past_sibling'    
+                    search_direction = 'past_sibling_id'    
 
             ## Get up to 2 or 5 memories in the randomly chosen search direction:
             for i in range(random.randint(2, 5)):
-                memory_id = random_memory[search_direction]
-                if memory_id is None:
+                sibling_memory_id = random_memory[search_direction]
+                ## If there are no remaining sibling memories then exit
+                if sibling_memory_id is None:
                     break
-                memory_path = self._get_memory_path(memory_id, random_link['depth'])
-                random_memory = load_json(memory_path)
-                memories[memory_id] = {'object':random_memory, 'path':memory_path}
+                ## Load sibling memory and add it to the set of memories to be rethemed
+                random_memory_set[sibling_memory_id] = (sql_query_by_ids('Memories', 'id', sibling_memory_id))[0]
 
-            if len(memories) == 1:
-                debug_message('Only one memory found. Skipping retheme.', self.debug_messages_enabled)
+            if len(random_memory_set) <= 1:
+                debug_message('Not enough memories found. Skipping retheme.', self.debug_messages_enabled)
                 continue
 
             ## Sort the list of memories from oldest to most recent
-            sorted(memories.items(), key=lambda x: x[1]['object']['timestamp'], reverse=True)
-            dict(memories)
-            memory_keys = list(memories.keys())
+            random_memory_set = dict(sorted(random_memory_set.items(), key=lambda x: x[1]["created_on"], reverse=True))
+            # sorted(random_memory_set.items(), key=lambda x: x['created_on'], reverse=True)
+            random_memory_keys = list(random_memory_set.keys())
 
-            ## Concatenate the content from the memories and retheme
-            content = ''
+            ## Concatenate the content from each of the memories and retheme
+            contents = []
             content_tokens = 0
-            for memory_id in memory_keys:
-                content += '%s\n' % (memories[memory_id]['object']['summary'])
-
+            for m in random_memory_keys:
+                contents.append(random_memory_set[m]['summary'])
+            content = '\n'.join(contents)
             ## Extract the themes from the content
-            rethemes = self.extract_themes(content)
-            rethemes_keys = list(rethemes.keys())
-            
-            ## Create new theme links if the theme is new
-            new_memory_links = {}
-            new_theme_links = {}
-            for memory_id in memory_keys:
-                new_memory_links[memory_id] = {}
-                existing_memory_links = (memories[memory_id]['object']['theme_links']).keys()
-                additional_recurrence_count = 0
-                for theme_id in rethemes_keys:
-                    recurrence = rethemes[theme_id]['recurrence']
-                    additional_recurrence_count += recurrence
-                    if rethemes[theme_id]['new_theme'] or theme_id not in existing_memory_links:
-                        ## Create a new link but set the recurrance to 0 so we can update all links at the same time
-                        link_obj = self.generate_theme_link(theme_id, memory_id, int(memories[memory_id]['object']['depth']), 0)
-                        if theme_id not in new_theme_links:
-                            new_theme_links[theme_id] = {}
-                        new_theme_links[theme_id][memory_id] = link_obj
-                        new_memory_links[memory_id][theme_id] = link_obj
-                
-                debug_message('Memory %s currently has total theme count:%s, we will be adding stats for %s themes for a total of %s recurrences.' % (memory_id, str(memories[memory_id]['object']['total_theme_count']), str(len(rethemes_keys)), str(additional_recurrence_count)), self.debug_messages_enabled)
+            retheme_results = self.extract_themes(content)
+            rethemes_keys = list(retheme_results.keys())
+            ## Get all of the theme items so we can update the record with new links if needed
+            rethemes = sql_query_by_ids('Themes','id',rethemes_keys)
 
-                ## Update memory with retheme recurrances
-                total_theme_count = memories[memory_id]['object']['total_theme_count'] + additional_recurrence_count
-                memories[memory_id]['object']['total_theme_count'] = total_theme_count
-
-                debug_message('Memory %s now has total theme count: %s'% (memory_id, str((memories[memory_id]['object']['total_theme_count']))), self.debug_messages_enabled)
-
-                ## Add new links to memory theme link list
-                memories[memory_id]['object']['theme_links'].update(new_memory_links[memory_id])
-                updated_link_ids = (memories[memory_id]['object']['theme_links']).keys()
-                for updated_link_id in updated_link_ids:
-                    ## Increment the recurrence of the rethemed links
-                    if updated_link_id in rethemes_keys:
-                        recurrence = rethemes[updated_link_id]['recurrence']
-                        memories[memory_id]['object']['theme_links'][updated_link_id]['recurrence'] += recurrence
-                    
-                    ## Update the link weights and cooldown
-                    link_cooldown = int(self.__config['memory_management']['theme_link_cooldown'])
-                    memories[memory_id]['object']['theme_links'][updated_link_id]['weight'] = memories[memory_id]['object']['theme_links'][updated_link_id]['recurrence'] / total_theme_count
-                    memories[memory_id]['object']['theme_links'][updated_link_id]['cooldown_count'] = link_cooldown
-                    ## Save update memory
-                    save_json(memories[memory_id]['path'], memories[memory_id]['object'])
-
-                    ## Update theme with updated link information
-                    updated_theme_path = self.get_theme_path(updated_link_id)
-                    updated_theme = load_json(updated_theme_path)
-                    updated_theme['links'].update({memory_id: memories[memory_id]['object']['theme_links'][updated_link_id]})
-                    save_json(updated_theme_path, updated_theme)
+            ## Begin rethemeing process
+            for memory_id in random_memory_keys:
+                for retheme_id in rethemes_keys:
+                    ## Query all existing existing links for this theme and get the associated memory ids
+                    existing_memory_links = {x['memory_id']: x['id'] for x in sql_query_by_ids('Theme_Links', 'theme_id', retheme_id)}
+                    ## Make sure the recurrence is at least 1
+                    recurrence = retheme_results[retheme_id]['recurrence']
+                    if recurrence <= 0:
+                        recurrence = 1
+                    ## Update the current memory's theme count
+                    random_memory_set[memory_id]['total_themes'] += recurrence
+                    if retheme_results[retheme_id]['new_theme'] or memory_id not in existing_memory_links:
+                        ## If the theme is new or was never linked to this memory, create a new theme link record
+                        timestamp = str(time())
+                        new_theme_id = str(uuid4())
+                        new_theme = self.create_theme_link_object(
+                            id=new_theme_id,
+                            depth=int(random_memory_set[memory_id]['depth']),
+                            memory_id=memory_id,
+                            theme_id=retheme_id,
+                            recurrence=recurrence,
+                            cooldown=2,
+                            created_on=timestamp,
+                            modified_on=timestamp
+                        )
+                        ## Insert new theme link record
+                        sql_insert_row('Theme_Links','id',new_theme)
+                    else:
+                        ## Otherwise update the existing theme link record with the new weight
+                        sql_update_row('Theme_Links','id',{'id':existing_memory_links[memory_id],'recurrence':recurrence,'cooldown':2})
+                ## All theme links associated with this memory need to have their weights updated:
+                weight_update_theme_links = sql_query_by_ids('Theme_Links', 'memory_id', memory_id)
+                for wuth in weight_update_theme_links:
+                    if wuth['recurrence'] <= 0:
+                        wuth['recurrence'] = 1
+                    wuth['weight'] = wuth['recurrence']/random_memory_set[memory_id]['total_themes']
+                    sql_update_row('Theme_Links','id', wuth)
+                ## Update memory record with the new total_themes count
+                sql_update_row('Memories', 'id', {'id':memory_id, 'total_themes':random_memory_set[memory_id]['total_themes']})
         return
 
     ## Return a list of relative file paths for all themes in the theme stash
@@ -387,33 +424,23 @@ class ThemeManager:
         theme_path = ('./%s/%s.json') % (self.__config['memory_management']['theme_stash_dir'], theme_id)
         return theme_path
 
-    ## If link is on cooldown decrement the cooldown counter, update the memory and theme, and return False; otherwise return True
-    def _link_is_updateable(self, link):
+    ## If link is on cooldown decrement the cooldown counter, update the link, and return False; otherwise return True
+    def __link_is_updateable(self, link):
         theme_id = link['theme_id']
         memory_id = link['memory_id']
         ## If the link cooldown count is zero then it can be updated
-        if link['cooldown_count'] == 0:
+        if link['cooldown'] == 0:
             return True
         
         ## Check if the link cooldown is less than zero. If it is then set it to zero. For now it will act as though it was not updatable.
-        if link['cooldown_count'] < 0:
-            debug_message('WARNING: Cooldown count on link: theme_id %s, memory_id: %s was less than zero. Setting it to zero.' % (theme_id, memory_id), self.debug_messages_enabled)
+        if link['cooldown'] < 0:
+            debug_message('WARNING: Cooldown on link: theme_id %s, memory_id: %s was less than zero. Setting it to zero.' % (theme_id, memory_id), self.debug_messages_enabled)
             new_cooldown = 0
         else:
-            new_cooldown = int(link['cooldown_count']) - 1
-        link['cooldown_count'] = new_cooldown
-
-        ## Update theme link and save
-        theme_path = self.get_theme_path(theme_id)
-        theme = load_json(theme_path)
-        theme['links'].update({memory_id: link})
-        save_json(theme_path, theme)
-
-        ## Update memory link and save
-        memory_path = self._get_memory_path(memory_id, link['depth'])
-        memory = load_json(memory_path)
-        memory['theme_links'].update({theme_id: link})
-        save_json(memory_path, memory)
+            new_cooldown = int(link['cooldown']) - 1
+        link['cooldown'] = new_cooldown
+        ## Update theme link
+        sql_update_row('Theme_Links','id',link)
         return False
 
     ## Thematic Searching

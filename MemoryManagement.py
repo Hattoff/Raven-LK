@@ -159,12 +159,8 @@ class MemoryManager:
 
         ## Add memory id to past sibling's 'next_sibling' id
         def update_past_sibling(self, memory_id, past_sibling_id):
-            sibling_path = '%s/%s.json' % (self.__memory_dir, past_sibling_id)
-            if os.path.isfile(sibling_path):
-                content = load_json(sibling_path)
-                content['next_sibling_id'] = memory_id
-                save_json(sibling_path, content)
-
+            sql_update_row('Memories','id',{'id':past_sibling_id,'next_sibling_id':memory_id})
+            
         ## Stash the memory in the sql database
         def stash_memory(self, memory):
             debug_message('saving memory locally...', self.debug_messages_enabled)
@@ -180,34 +176,10 @@ class MemoryManager:
                 for child_memory in children_memories:
                     child_memory['episodic_parent_id'] = memory_id
                     sql_update_row('Memories','id',child_memory)
-                    
-    ## Memories all have the following form:
-    def __memory_template(self):
-        memory = {
-            "id": None,
-            "depth": -1,
-            "speaker": None,
-            "content": "",
-            "content_tokens": -1,
-            "summary": "",
-            "summary_tokens":-1,
-            "episodic_parent_id":"",
-            "episodic_children_ids":[],
-            "past_sibling_id":None,
-            "next_sibling_id":None,
-            "theme_link_ids":[],
-            "total_themes":-1,
-            "created_on":"",
-            "modified_on":""
-        }
-        return memory
-    
+
+    ## Build a memory object and pupulate it with none, some, or all columns/attributes
     def __create_memory_object(self, **kwargs):
-        memory = self.__memory_template()
-        for key, value in kwargs.items():
-            if key in memory:
-                memory[key] = value
-        return memory
+        return create_row_object('Memories', **kwargs)
 
     ## Return the number of memories of a given cache
     def get_cache_memory_count(self,depth):
@@ -308,8 +280,8 @@ class MemoryManager:
             summary=summary,
             summary_tokens=int(summary_tokens),
             total_themes=0,
-            create_date=timestamp,
-            modify_date=timestamp        
+            created_on=timestamp,
+            modified_on=timestamp
         )
         return eidetic_memory, summary_tokens
 
@@ -321,61 +293,48 @@ class MemoryManager:
         timestring = timestamp_to_datetime(timestamp)
 
         ## Append all summaries together, get a token total, and get a list of memory ids
-        content = ''
+        contents = []
         content_tokens = 0
         memory_ids = []
         for memory in memories:
-            content += '%s\n' % (memory['summary'])
+            contents.append(memory['summary'])
             content_tokens += int(memory['summary_tokens'])
             memory_ids.append(str(memory['id']))
-
+        content = '\n'.join(contents)
         summary_result = self.summarize_content(content, depth, content_tokens = content_tokens)
         summary = self.cleanup_response(summary_result)
         summary_tokens = get_token_estimate(summary)
         
         ## Extract the themes of this memory
         themes = self.__themes.extract_themes(content)
-        theme_namespace = self.__config['memory_management']['theme_namespace_template']
-        theme_folderpath = self.__config['memory_management']['theme_stash_dir']
 
-        ## Create new theme links for all lower memories and add links to theme objects
-        memory_links = {}
-        theme_links = {}
-        theme_keys = list(themes.keys())
-        for memory_id in memory_ids:
-                memory_links[memory_id] = {}
-                for theme_id in theme_keys:
-                    recurrence = themes[theme_id]['recurrence']
-                    link_obj = self.__themes.generate_theme_link(theme_id, memory_id, int(depth)-1, recurrence)
-                    if theme_id not in theme_links:
-                        theme_links[theme_id] = {}
-                    theme_links[theme_id][memory_id] = link_obj
-                    memory_links[memory_id][theme_id] = link_obj
-
-        theme_stash_dir = self.__config['memory_management']['theme_stash_dir']
-
-        total_theme_count = 0
-        for theme_id in theme_keys:
-            ## Load and update all Theme Objects
-            theme_filepath = '%s/%s.json' % (theme_stash_dir, theme_id)
-            theme_obj = load_json(theme_filepath)
-
-            recurrence = themes[theme_id]['recurrence']
-            theme_obj['recurrence'] += recurrence
-            total_theme_count += recurrence
-            theme_obj['links'].update(theme_links[theme_id])
-            save_json(theme_filepath, theme_obj)
-
-        memory_stash_dir = self.__config['memory_management']['memory_stash_dir']
-        memory_stash_folder = self.__config['memory_management']['stash_folder_template'] % (int(depth)-1)
-        memory_dir = '%s/%s' % (memory_stash_dir, memory_stash_folder)
-        for memory_id in memory_ids:
-            ## Load and update all lower memories
-            memory_filepath = '%s/%s.json' % (memory_dir, memory_id)
-            memory_obj = load_json(memory_filepath)
-            memory_obj['theme_links'].update(memory_links[memory_id])
-            memory_obj['total_theme_count'] += total_theme_count
-            save_json(memory_filepath, memory_obj)
+        ## Make new theme links and update old memories
+        for memory in memories:
+            total_themes = 0
+            for theme_id in themes.keys():
+                recurrence = themes[theme_id]['recurrence']
+                total_themes += recurrence
+                ## Create a new theme link record
+                timestamp = str(time())
+                new_theme_id = str(uuid4())
+                new_theme = self.__themes.create_theme_link_object(
+                    id=new_theme_id,
+                    depth=int(memory['depth']),
+                    memory_id=memory['id'],
+                    theme_id=theme_id,
+                    recurrence=recurrence,
+                    cooldown=0,
+                    created_on=timestamp,
+                    modified_on=timestamp
+                )
+                ## Insert new theme link record
+                sql_insert_row('Theme_Links','id',new_theme)
+            ## Update memory with new total_themes:
+            new_total_themes = memory['total_themes']
+            if new_total_themes < 0 or type(new_total_themes) != int:
+                new_total_themes = 0
+            new_total_themes += total_themes
+            sql_update_row('Memories', 'id', {'id':memory['id'], 'total_themes':new_total_themes})
 
         ## Build episodic memory object
         episodic_memory = self.__create_memory_object(
@@ -384,9 +343,9 @@ class MemoryManager:
             summary=summary,
             summary_tokens=int(summary_tokens),
             episodic_children_ids=memory_ids,
-            total_theme_count=0,
-            create_date=timestamp,
-            modify_date=timestamp
+            total_themes=0,
+            created_on=timestamp,
+            modified_on=timestamp
         )
         return episodic_memory, summary_tokens
 
@@ -530,7 +489,8 @@ class MemoryManager:
         if conversation_log == '' and conversation_notes == '':
             breakpoint('Stopping memory recall...')
             return [], False, False
-
+        print('forcing memory recall skip...')
+        return [], False, False
         ## Determine if memory recall is necessary:
         recall_prompt = self.__prompts.RecallExtraction.get_prompt(conversation_log)
         recall_response_tokens = self.__prompts.RecallExtraction.response_tokens
@@ -554,7 +514,7 @@ class MemoryManager:
             return [], True, False
 
         if recall_obj['sufficient_information']:
-            debug_message('Stopping memory recall... again', self.debug_messages_enabled)
+            debug_message('Sufficient information available, skipping memory recall...', self.debug_messages_enabled)
             return [], True, True
 
         ## Recall determined that more information is needed.
@@ -600,7 +560,7 @@ class MemoryManager:
                     memory_obj = memories[0]
                     ## Get memory contents
                     memory_id = memory_obj['id']
-                    memory_date = memory_obj['timestring']
+                    memory_date = memory_obj['created_on']
                     memory_content = memory_obj['content']
                     memory_speaker = memory_obj['speaker']
                     relevant_information_content = f"[\nINFORMATION ID: {memory_id}\nRECORDED ON: {memory_date}\nFROM: {memory_speaker}\nCONTENT: {memory_content}\n]\n"
