@@ -5,7 +5,7 @@
         "response_tokens":600
     },
     "anticipation":{
-        "prompt":"Given the following %s, infer the USER's actual information needs. Attempt to anticipate what the user truly needs even if the USER does not fully understand it yet themselves, or is asking the wrong questions. Emphasize the needs of the last message by the USER.\n%s",
+        "prompt":"Given the following %s, infer the USER's actual information needs. Attempt to anticipate what the user truly needs even if the USER does not fully understand it yet themselves, or is asking the wrong questions. However, the USER may change topics, in which case their needs will have changed. Emphasize the needs of the last message by the USER.\n%s",
         "temperature":0.0,
         "response_tokens":400
     }

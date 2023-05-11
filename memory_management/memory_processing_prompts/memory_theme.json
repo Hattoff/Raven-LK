@@ -1,0 +1,7 @@
+{
+    "summary":{
+        "system_message":"Given the following chat log, identify the key themes of this information. Follow the INSTRUCTIONS at the end of the prompt.\n%s\nINSTRUCTIONS:\nI will list all themes and format my response like this: {\"themes\":[]}",
+        "temperature":0.0,
+        "response_tokens":250
+    }
+}

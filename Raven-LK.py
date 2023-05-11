@@ -9,10 +9,12 @@ from tkinter import ttk, scrolledtext
 from spellchecker import SpellChecker
 import screeninfo
 from ConversationManagement import ConversationManager
+from UtilityFunctions import timestamp_to_datetime
 conversation_manager = ConversationManager()
 _full_height = False
 _window_width = 600
 _window_height = 600
+_show_debug_frame = False
 
 ####### TKINTER functions by GPT4 prompted by David Shapiro(daveshap); modified by Matt Hatton(hattoff)
 ####### https://github.com/daveshap/Chapter_Summarizer_GPT4/blob/main/chat_tkinter2.py
@@ -73,7 +75,7 @@ def on_return_key(event):
 
 ## Initialize the conversation and display the most recent messages for context
 def load_conversation(message_history_count = 2):
-    recent_messages = conversation_manager.load_state(message_history_count)
+    recent_messages = conversation_manager.load_state()
     message_count = len(recent_messages)
     if message_count == 0:
         chat_text.insert(tk.END, "\nWelcome!\n\n", 'system')
@@ -82,13 +84,13 @@ def load_conversation(message_history_count = 2):
         chat_text.insert(tk.END, "\nWelcome Back!\n\n", 'system')
     for m in range(message_count-1):
         if recent_messages[m]['speaker'] == 'USER':
-            display_user_response(recent_messages[m]['content'],recent_messages[m]['timestring'])
+            display_user_response(recent_messages[m]['content'],timestamp_to_datetime(recent_messages[m]['created_on']))
         else:
-            display_ai_response(recent_messages[m]['content'],recent_messages[m]['timestring'])
+            display_ai_response(recent_messages[m]['content'],timestamp_to_datetime(recent_messages[m]['created_on']))
     if recent_messages[message_count-1]['speaker'] == 'USER':
         user_entry.insert("1.0", recent_messages[message_count-1]['content'])
     else:
-        display_ai_response(recent_messages[message_count-1]['content'],recent_messages[message_count-1]['timestring'])
+        display_ai_response(recent_messages[message_count-1]['content'],timestamp_to_datetime(recent_messages[message_count-1]['created_on']))
 
 ## Set the center of the window to the user's cursor
 def snap_window_to_cursor(window_width = 400, window_height = 400):
@@ -98,7 +100,7 @@ def snap_window_to_cursor(window_width = 400, window_height = 400):
 
     # Calculate the new position of the window
     window_x = cursor_x - (window_width // 2)
-    window_y = cursor_y - (window_height // 2)
+    window_y = cursor_y - 20
 
     global _window_width
     global _window_height
@@ -217,21 +219,32 @@ def check_spelling(event):
         # Display suggestions for misspelled words
         user_entry.tag_add("spell_error", start_position, end_position)
 
+## Show or hide the debug messages
+def toggle_debug_frame():
+    global _show_debug_frame
+    _show_debug_frame = not _show_debug_frame
+    right_frame.grid_forget() if not _show_debug_frame else right_frame.grid(column=1, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
 if __name__ == "__main__":
     # Tkinter GUI
     root = tk.Tk()
     root.title("Raven-LK")
 
-    main_frame = ttk.Frame(root, padding="10")
+    main_frame = ttk.Frame(root, padding="5")
     main_frame.grid(column=0, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
+    right_frame = ttk.Frame(root, padding="5")
+    right_frame.grid(column=1, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+    # root.columnconfigure(0, weight=1)
     root.columnconfigure(0, weight=1)
+    root.columnconfigure(1, weight=0)
     root.rowconfigure(0, weight=1)
 
     main_frame.columnconfigure(0, weight=1)
     main_frame.rowconfigure(0, weight=1)
 
+    ## Primary chat log
     chat_text = tk.Text(main_frame, wrap=tk.WORD, width=60, height=20, bg='#333333')
     chat_text.grid(column=0, row=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
     chat_text.tag_configure('user', background='#444654', wrap='word', justify='right',foreground="white", font=("Calibri", 12))
@@ -240,16 +253,23 @@ if __name__ == "__main__":
     chat_text.tag_configure('raven-summary', background='#343541', wrap='word', justify='left', font=("Calibri", 12, "italic"),foreground="white")
     chat_text.tag_configure('system', justify='center', foreground="white", font=("Calibri", 14, "bold"))
 
+    ## Secondary log I intend to use for debugging messages, but I am unsure if they will work with async function calls.
+    debug_messages = tk.Text(right_frame, wrap=tk.WORD, width=60, height=35, bg='#333333')
+    debug_messages.grid(column=0, row=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+    debug_messages.tag_configure('system', wrap='word', justify='center',foreground="white", font=("Calibri", 12))
+    debug_messages.insert(tk.END, "\nNothing here yet...\n\n", 'system')
+    debug_messages.config(state='disabled')
+
     send_button = ttk.Button(main_frame, text="Send", command=send_message)
-    send_button.grid(column=1, row=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+    send_button.grid(column=0, row=2, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
 
     ai_status = tk.StringVar()
     ai_status_label = ttk.Label(main_frame, textvariable=ai_status)
-    ai_status_label.grid(column=2, row=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+    ai_status_label.grid(column=1, row=3, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
 
     # Initialize the text box
-    user_entry = tk.Text(main_frame, width=50, height=5, wrap="word", font=("Calibri", 12))
-    user_entry.grid(column=0, row=1, sticky=(tk.W, tk.E))
+    user_entry = tk.Text(main_frame, width=50, height=5, wrap="word", background='#D3D3D3', font=("Calibri", 12))
+    user_entry.grid(column=0, row=1,columnspan=3, sticky=(tk.W, tk.E))
     # Initialize the spell checker
     spell = SpellChecker()
 
@@ -268,5 +288,19 @@ if __name__ == "__main__":
     load_conversation(10)
     chat_text.config(state='disabled')
 
-    snap_window_to_cursor(600, 600)
+    snap_window_to_cursor(800, 600)
+
+    right_frame.grid_forget()
+    # Create a menu bar
+    menu_bar = tk.Menu(root)
+    root.config(menu=menu_bar)
+    # Create a File menu with a Quit option
+    file_menu = tk.Menu(menu_bar, tearoff=0)
+    file_menu.add_command(label="Quit", command=root.quit)
+    menu_bar.add_cascade(label="File", menu=file_menu)
+    # Create a File menu with a Quit option
+    view_menu = tk.Menu(menu_bar, tearoff=0)
+    view_menu.add_command(label="Debug Messages", command=toggle_debug_frame)
+    menu_bar.add_cascade(label="View", menu=view_menu)
+
     root.mainloop()
