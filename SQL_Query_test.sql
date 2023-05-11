@@ -1,13 +1,14 @@
-select 
-    tl.theme_id
-    ,tl.weight
-    ,t.phrases
-    ,m.summary
-from 
-    Theme_Links tl
-join
-    Memories m on m.id = tl.memory_id
-join
-    Themes t on t.id = tl.theme_id
-where 
-    tl.weight >= 0.15
+-- delete from Memories;
+-- delete from Prompts;
+-- delete from Theme_Links;
+-- delete from Themes;
+-- delete from Memory_States;
+-- delete from Memory_Caches;
+-- select * from Prompts p where id like '5d49%'
+
+-- select content from Memories where speaker = 'USER' order by created_on desc
+
+-- SELECT speaker, GROUP_CONCAT(content, '~~') AS aggregated_values
+-- FROM Memories
+-- GROUP BY speaker
+-- order by created_on desc;

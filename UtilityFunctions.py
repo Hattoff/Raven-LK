@@ -54,7 +54,26 @@ def reload_config():
     config.read('config.ini')
 
 def timestamp_to_datetime(unix_time):
+    if type(unix_time) == str:
+        unix_time = float(unix_time)
     return (datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M:%S%p %Z")).strip()
+
+def timestamp_to_detailed_datetime(unix_time):
+    if type(unix_time) == str:
+        unix_time = float(unix_time)
+    
+    # Get the datetime object from the Unix timestamp
+    dt = datetime.datetime.fromtimestamp(unix_time)
+    
+    # Convert the datetime to various string formats
+    date_str = dt.strftime("%A, %B %d, %Y")
+    time_str = dt.strftime("%I:%M:%S %p %Z").lstrip("0")
+    month_day_str = dt.strftime("%B %d")
+    year_month_day_str = dt.strftime("%Y-%m-%d")
+    
+    result = f"date: {date_str} time: {time_str} month-day: {month_day_str} year-month-day: {year_month_day_str}"
+    # Return a dictionary of the datetime strings
+    return result
 
 #####################################################
                 ## TikToken ##
@@ -82,7 +101,7 @@ def gpt_completion(messages, temp=0.0, tokens=400, stop=['USER:', 'RAVEN:'], pri
     freq_pen=0.0
     pres_pen=0.0
 
-    max_retry = 5
+    max_retry = 15
     retry = 0
     while True:
         try:
@@ -102,10 +121,11 @@ def gpt_completion(messages, temp=0.0, tokens=400, stop=['USER:', 'RAVEN:'], pri
             return response_str, total_tokens
         except Exception as oops:
             retry += 1
+            debug_message(f"Didn't get a response from OpenAI, trying again in {2*retry} seconds...")
             if retry >= max_retry:
                 return "GPT3.5 error: %s" % oops, -1
             print('Error communicating with OpenAI:', oops)
-            sleep(2)
+            sleep(2*retry)
 
 def print_response_stats(response):
     response_id = ('\nResponse %s' % str(response['id']))
@@ -113,6 +133,17 @@ def print_response_stats(response):
     completion_tokens = ('\nCompletion Tokens: %s' % str(response['usage']['completion_tokens']))
     total_tokens = ('\nTotal Tokens: %s\n' % (str(response['usage']['total_tokens'])))
     print(response_id + prompt_tokens + completion_tokens + total_tokens)
+
+## The role can be either system or user. If the role is system then you are either giving the model instructions/personas or example prompts.
+## Then name field is used for example prompts which guide the model on how to respond.
+## If the name field has data, the model will not consider them part of the conversation; the role will be user by default.
+def compose_gpt_message(content, role, name=''):
+    content = content.encode(encoding='ASCII',errors='ignore').decode() ## Cheeky way to remove encoding errors
+    if name == '':
+        return {"role":role, "content": content}
+    else:
+        role = 'user'
+        return {"role":role,"name":name,"content": content}
 
 #####################################################
                 ## Debug ##
@@ -220,7 +251,7 @@ def create_row_object(table_name, **kwargs):
     return row
 
 ## Search a SQL Database table using a list of ids. Leaving ids blank will fetch all records.
-def sql_query_by_ids(table_name, primary_key_name, ids=None):
+def sql_query_by_ids(table_name, key_name, ids=None):
     if type(ids) == str:
         ids = [ids]
     sqldb = get_sqldb()
@@ -228,7 +259,7 @@ def sql_query_by_ids(table_name, primary_key_name, ids=None):
     rows = []
     if ids is not None:
         id_list = ','.join('?' for _ in ids)
-        query = f"SELECT * FROM {table_name} WHERE {primary_key_name} IN ({id_list})"
+        query = f"SELECT * FROM {table_name} WHERE {key_name} IN ({id_list})"
         cursor.execute(query, ids)
         ## Convert rows to dictionary objects
         rows = cursor.fetchall()
@@ -243,13 +274,24 @@ def sql_query_by_ids(table_name, primary_key_name, ids=None):
 
 ## Take a dictionary representing a row in a table and update all values in that row
 def sql_update_row(table_name, primary_key_name, row):
+    actual_table_columns = get_table_template(table_name)
+    verified_row = {}
+    for column in row:
+        if column not in actual_table_columns:
+            debug_messages(f"The key {column} does not exist as a column in table {table_name}. Skipping the data on this key.")
+        else:
+            verified_row[column] = row[column]
+    ## You need at least two verified keys (an id and a column to update)
+    if len(list(verified_row.keys())) <= 1:
+        debug_message('Not enough information to insert this record')
+    elif primary_key_name not in verified_row:
+        debug_message(f"Primary key name provided ({primary_key_name}) was not in the verified rows. Skipping update.")    
     ## Update the modified_on date if that column exists
-    timestamp = str(time()) 
-    if 'modified_on' in row:
-        row['modified_on'] = timestamp
+    if 'modified_on' in verified_row:
+        verified_row['modified_on'] = time()
     sqldb = get_sqldb()
     set_clauses = []
-    for column_name, value in row.items():
+    for column_name, value in verified_row.items():
         ## Skip the primary key column
         if column_name != primary_key_name:
             ## If the value is an object then dump the jsonified version
@@ -272,18 +314,17 @@ def sql_update_row(table_name, primary_key_name, row):
             else:
                 set_clauses.append(f"{column_name} = NULL")
     ## Construct the UPDATE statement
-    update_sql = f"UPDATE {table_name} SET {', '.join(set_clauses)} WHERE {primary_key_name} = '{row[primary_key_name]}'"
+    update_sql = f"UPDATE {table_name} SET {', '.join(set_clauses)} WHERE {primary_key_name} = '{verified_row[primary_key_name]}'"
     ## Attempt to update the record
     update_success = False
     cursor = sqldb.cursor()
     try:
         cursor.execute(update_sql)
         sqldb.commit()
-        print("Update successful")
         update_success = True
     except Exception as e:
         # Log the error message and rollback the transaction
-        print(f"Update failed: {str(e)}")
+        debug_message(f"Update failed: {str(e)}")
         sqldb.rollback()
         update_success = False
     cursor.close()
@@ -291,25 +332,31 @@ def sql_update_row(table_name, primary_key_name, row):
     return update_success
 
 ## Insert a blank new record into the database then update it with the row contents.
-def sql_insert_row(table_name, primary_key_name, row):
+def sql_insert_row(table_name, key_name, row):
     sqldb = get_sqldb()
+    ## Ensure the row passed 
+    actual_table_columns = get_table_template(table_name)
+    if actual_table_columns == {}:
+        debug_message(f"Table {table_name} does not exist. Skipping insert.")
+        return
+    if key_name not in actual_table_columns:
+        debug_message(f"Key {key_name} is not a column of table {table_name}. Skipping insert.")    
     ## Create a dummy record with just the id; everything else is Null. Force the first element in this list to be the primary key
-    column_names = sorted(row.keys(), key=lambda x: x != primary_key_name)
+    column_names = sorted(actual_table_columns.keys(), key=lambda x: x != key_name)
     values = [None for _ in range(len(column_names))]
     ## Set the primary key value
-    values[0] = row[primary_key_name]
+    values[0] = row[key_name]
     update_sql = f"INSERT OR REPLACE INTO {table_name} ({', '.join(column_names)}) VALUES ({', '.join(['?' for _ in row.values()])})"
     cursor = sqldb.cursor()
     insert_success = False
     try:
         cursor.execute(update_sql, values)
         sqldb.commit()
-        print("Insert successful")
         insert_success = True
         ## Update the new blank record with the actual information
-        sql_update_row(table_name, primary_key_name, row)
+        sql_update_row(table_name, key_name, row)
     except Exception as e:
-        print(f"Insert failed: {str(e)}")
+        debug_message(f"Insert failed: {str(e)}")
         sqldb.rollback()
         insert_success = False
     cursor.close()
@@ -317,9 +364,9 @@ def sql_insert_row(table_name, primary_key_name, row):
     return insert_success
 
 ## Remove a record from the database
-def sql_delete_row(table_name, primary_key_name, id):
+def sql_delete_row(table_name, key_name, id):
     sqldb = get_sqldb()
-    update_sql = f"DELETE FROM {table_name} where {primary_key_name} = '{id}'"
+    update_sql = f"DELETE FROM {table_name} where {key_name} = '{id}'"
     cursor = sqldb.cursor()
     update_success = False
     try:
@@ -334,3 +381,18 @@ def sql_delete_row(table_name, primary_key_name, id):
     cursor.close()
     sqldb.close()
     return update_success
+
+## Execute simple queries
+def sql_custom_query(query, params = None):
+    sqldb = get_sqldb()
+    cursor = sqldb.cursor()
+    if params is not None:
+        if type(params) not in (tuple, list):
+            params = (params,)
+        cursor.execute(query, params)
+    else:
+        cursor.execute(query)
+    results = cursor.fetchall()
+    cursor.close()
+    sqldb.close()
+    return results

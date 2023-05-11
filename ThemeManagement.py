@@ -101,7 +101,6 @@ class ThemeManager:
             return extracted_themes
         theme_namespace = self.__config['memory_management']['theme_namespace_template']
         theme_match_threshold = float(self.__config['memory_management']['theme_match_threshold'])
-        # theme_folderpath = self.__prompts.ThemeExtraction.stash_path
         print('themes extracted...')
         for phrase in themes:
             phrase = (str(phrase)).lower()
@@ -181,6 +180,20 @@ class ThemeManager:
 
         message = [self.compose_gpt_message(prompt,'user')]
         response, tokens = gpt_completion(message, temperature, response_tokens)
+
+        ## Save anticipation prompt and response
+        prompt_row = create_row_object(
+            table_name='Prompts',
+            id=str(uuid4()),
+            prompt=prompt,
+            response=response,
+            tokens=tokens,
+            temperature=temperature,
+            comments='Extract themes.',
+            created_on=str(time())
+        )
+        sql_insert_row('Prompts','id',prompt_row)
+
         return response
 
     ## Get themes
@@ -230,13 +243,11 @@ class ThemeManager:
         
     ## Object used to track theme history. I intend to use this to analyze theme decoherence.
     def generate_theme_history(self, iteration = 0, similarity = 0.0):
-        timestamp = time()
-        timestring = timestamp_to_datetime(timestamp)
+        timestamp = str(time())
         theme_history_obj = {
             'iteration':iteration,
             'similarity':similarity,
-            'timestamp':timestamp,
-            'timestring':timestring
+            'created_on':timestamp
         }
         return theme_history_obj
 
@@ -349,7 +360,6 @@ class ThemeManager:
 
             ## Sort the list of memories from oldest to most recent
             random_memory_set = dict(sorted(random_memory_set.items(), key=lambda x: x[1]["created_on"], reverse=True))
-            # sorted(random_memory_set.items(), key=lambda x: x['created_on'], reverse=True)
             random_memory_keys = list(random_memory_set.keys())
 
             ## Concatenate the content from each of the memories and retheme
@@ -404,25 +414,6 @@ class ThemeManager:
                 ## Update memory record with the new total_themes count
                 sql_update_row('Memories', 'id', {'id':memory_id, 'total_themes':random_memory_set[memory_id]['total_themes']})
         return
-
-    ## Return a list of relative file paths for all themes in the theme stash
-    def _get_all_theme_paths(self):
-        theme_glob = glob.glob('./%s/*' % self.__config['memory_management']['theme_stash_dir'])
-        themes = list(map(lambda x: x.replace('\\','/'), list(theme_glob)))
-        return themes
-    
-    ## Return file path for particular memory and depth
-    def _get_memory_path(self, memory_id, depth):
-        memory_base_path = self.__config['memory_management']['memory_stash_dir']
-        memory_stash_template = self.__config['memory_management']['stash_folder_template']
-        memory_folder_path = memory_stash_template % int(depth)
-        memory_path = '%s/%s/%s.json' % (memory_base_path, memory_folder_path, memory_id)
-        return memory_path
-
-    ## Return file path for particular theme
-    def get_theme_path(self, theme_id):
-        theme_path = ('./%s/%s.json') % (self.__config['memory_management']['theme_stash_dir'], theme_id)
-        return theme_path
 
     ## If link is on cooldown decrement the cooldown counter, update the link, and return False; otherwise return True
     def __link_is_updateable(self, link):

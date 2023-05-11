@@ -9,6 +9,7 @@ from tkinter import ttk, scrolledtext
 from spellchecker import SpellChecker
 import screeninfo
 from ConversationManagement import ConversationManager
+from UtilityFunctions import timestamp_to_datetime
 conversation_manager = ConversationManager()
 _full_height = False
 _window_width = 600
@@ -74,7 +75,7 @@ def on_return_key(event):
 
 ## Initialize the conversation and display the most recent messages for context
 def load_conversation(message_history_count = 2):
-    recent_messages = conversation_manager.load_state(message_history_count)
+    recent_messages = conversation_manager.load_state()
     message_count = len(recent_messages)
     if message_count == 0:
         chat_text.insert(tk.END, "\nWelcome!\n\n", 'system')
@@ -83,13 +84,13 @@ def load_conversation(message_history_count = 2):
         chat_text.insert(tk.END, "\nWelcome Back!\n\n", 'system')
     for m in range(message_count-1):
         if recent_messages[m]['speaker'] == 'USER':
-            display_user_response(recent_messages[m]['content'],recent_messages[m]['timestring'])
+            display_user_response(recent_messages[m]['content'],timestamp_to_datetime(recent_messages[m]['created_on']))
         else:
-            display_ai_response(recent_messages[m]['content'],recent_messages[m]['timestring'])
+            display_ai_response(recent_messages[m]['content'],timestamp_to_datetime(recent_messages[m]['created_on']))
     if recent_messages[message_count-1]['speaker'] == 'USER':
         user_entry.insert("1.0", recent_messages[message_count-1]['content'])
     else:
-        display_ai_response(recent_messages[message_count-1]['content'],recent_messages[message_count-1]['timestring'])
+        display_ai_response(recent_messages[message_count-1]['content'],timestamp_to_datetime(recent_messages[message_count-1]['created_on']))
 
 ## Set the center of the window to the user's cursor
 def snap_window_to_cursor(window_width = 400, window_height = 400):

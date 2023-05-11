@@ -35,23 +35,23 @@ class MemoryManager:
     class _MemoryCache:
         ## Depth should not be changed after initialization.
         ## If cache is not empty then load it, otherwise start fresh.
-        def __init__(self, depth, cache_token_limit, max_tokens, cache=None):
+        def __init__(self, depth, cache_token_limit, max_tokens, cache = None):
             self.debug_messages_enabled = True
-            self.__id = str(uuid4())
-            self.__depth = int(depth)
-            self.__config = configparser.ConfigParser()
-            self.__config.read('config.ini')
-            self.__cache_token_limit = cache_token_limit
-            self.__max_tokens = int(max_tokens)
-            self.__memories = list()
-            self.__current_memory_ids = list()
-            self.__last_memory_id = None
-            self.__previous_memory_ids = list()
-            self.__token_count = 0
-            self.__memory_stash_folder = (self.__config['memory_management']['stash_folder_template'] % self.__depth)
-            self.__memory_dir = '%s/%s' % (self.__config['memory_management']['memory_stash_dir'], self.__memory_stash_folder)
+            self.__config = get_config()
             if cache is not None:
-                self.load_cache(cache)
+                self.__cache = cache
+                self.__depth = self.__cache['depth']
+                self.__cache_token_limit = self.__cache['cache_token_limit']
+                self.__max_tokens = self.__cache['max_tokens']
+            else:
+                self.__depth = int(depth)
+                self.__cache_token_limit = int(cache_token_limit)
+                self.__max_tokens = int(max_tokens)
+                self.__cache = self.get_new_cache()
+
+        @property
+        def id(self):
+            return self.__cache['id']
 
         @property
         def depth(self):
@@ -59,127 +59,118 @@ class MemoryManager:
 
         @property
         def cache_token_limit(self):
-            return self.self.__cache_token_limit
+            return self.__cache_token_limit
 
         ## Returns a copy of memories; useful for compression and will not bork stuff when flushed
         @property
         def memories(self):
-            return self.__memories.copy()
+            memories = sql_query_by_ids('Memories','id',self.__cache['memory_ids'])
+            return memories
 
         @property
         def memory_count(self):
-            return len(self.__memories)
+            return len(self.__cache['memory_ids'])
 
         @property
         def token_count(self):
-            return self.__token_count
+            return self.__cache['token_count']
 
         ## Return a list of all ids in memories tracked by the memory cache
         @property
         def memory_ids(self):
-            ids = list(map(lambda m: m['id'], self.__memories))
-            return ids
+            return self.__cache['memory_ids']
         
-        @property
-        def previous_memory_ids(self):
-            return self.__previous_memory_ids
+        # @property
+        # def previous_memory_ids(self):
+        #     return self.__previous_memory_ids
 
-        ## Set all class attributes from the cache JSON
-        def load_cache(self, cache):
-            self.__id = str(cache['id'])
-            self.__depth = int(cache['depth'])
-            self.__cache_token_limit = int(cache['cache_token_limit'])
-            self.__max_tokens = int(cache['max_tokens'])
-            self.__token_count = int(cache['token_count'])
-            self.__memories = list(cache['memories'])
-            self.__current_memory_ids = list(cache['current_memory_ids'])
-            self.__previous_memory_ids = list(cache['previous_memory_ids'])
-            ## TODO: If cache is invalid, throw error.
-
-        ## Return a JSON version of this object to save
-        @property
-        def cache(self):
-            timestamp = time()
-            timestring = timestamp_to_datetime(timestamp)
-            cache = {
-                "id":self.__id,
-                "depth":self.__depth,
-                "cache_token_limit":self.__cache_token_limit,
-                "max_tokens":self.__max_tokens,
-                "token_count":self.__token_count,
-                "memories":self.__memories,
-                "current_memory_ids": self.__current_memory_ids,
-                "previous_memory_ids": self.__previous_memory_ids,
-                "timestamp": timestamp,
-                "timestring": timestring
-            }
-            return cache
+        def get_new_cache(self, new_cache_id = str(uuid4())):
+            new_cache = create_row_object(
+                table_name='Memory_Caches',
+                id=new_cache_id,
+                depth=self.__depth,
+                cache_token_limit=self.__cache_token_limit,
+                token_count=0,
+                max_tokens=self.__max_tokens,
+                memory_ids=list(),
+                created_on=time(),
+                modified_on=time()
+            )
+            return new_cache
 
         ## Memories are in the raven eidetic or episodic JSON format
         ## Memory space check is NOT enforced so check it before adding a memory
         def add_memory(self, memory, number_of_tokens):
-            self.__token_count += int(number_of_tokens)
-            memory_count = len(self.__memories)
+            ## Increment the token count
+            self.__cache['token_count'] += int(number_of_tokens)
             ## Link memory siblings
+            memory_count = len(self.__cache['memory_ids'])
+            memory_id = memory['id']
+            past_sibling_id = None
             if memory_count > 0:
-                memory_id = memory['id']
-                past_sibling_id = self.__memories[memory_count-1]['id']
-                self.update_past_sibling(memory_id, past_sibling_id)
-                memory['past_sibling_id'] = past_sibling_id
-            elif self.__last_memory_id is not None:
-                memory_id = memory['id']
-                past_sibling_id = self.__last_memory_id
-                self.update_past_sibling(memory_id, past_sibling_id)
-                memory['past_sibling_id'] = past_sibling_id
-                self.__last_memory_id = None
-            self.__memories.append(memory)
-            self.__current_memory_ids.append(memory['id'])
+                past_sibling_id = self.__cache['last_memory_id']
+            else:
+                self.__cache['first_memory_id'] = memory['id']
+                if self.__cache['past_cache_id'] is not None:
+                    ## Update cache's first memory id
+                    past_cache_results = sql_query_by_ids('Memory_Caches','id',self.__cache['past_cache_id'])
+                    if len(past_cache_results) <= 0:
+                        debug_message(f"Unable to load past memory cache {self.__cache['past_cache_id']}")
+                    else:
+                        past_sibling_id = past_cache_results[0]['last_memory_id']
+            self.update_past_sibling(memory_id, past_sibling_id)
+            ## Link memory children
             self.parent_local_child_memories(memory)
-            self.stash_memory(memory)
+            ## Update memory
+            memory['past_sibling_id'] = past_sibling_id
+            self.save_memory(memory)
+            ## Update cache
+            self.__cache['last_memory_id'] = memory['id']
+            self.__cache['memory_ids'].append(memory['id'])
+            self.save_memory_cache()
 
         ## Before adding a memory, check to see if there will be space with next memory.
         def has_memory_space(self, next_number_of_tokens):
-            if self.__token_count + int(next_number_of_tokens) <= self.__cache_token_limit:
+            if self.__cache['token_count'] + int(next_number_of_tokens) <= self.__cache['cache_token_limit']:
                 return True
             else:
                 return False
-
-        def transfer_memory_ids(self):
-            ## Cache the current caches memory ids for conversation loading purposes
-            self.__previous_memory_ids = self.__current_memory_ids.copy()
-            if len(self.__current_memory_ids) > 0:
-                self.__last_memory_id = self.__current_memory_ids[len(self.__current_memory_ids)-1]
-            self.__current_memory_ids.clear()
             
         def flush_memory_cache(self):
-            ## Clear memory cache and reset token count
-            self.__memories.clear()
-            self.__token_count = 0
-            self.__id = str(uuid4())
+            ## Get copy of current cache id and make a new cache id
+            old_cache_id = self.__cache['id']
+            new_cache_id = str(uuid4())
+            ## Update current cache with next cache id then save
+            self.__cache['next_cache_id'] = new_cache_id
+            self.save_memory_cache()
+            ## Clear memory cache, set past cache id, then save
+            self.__cache = self.get_new_cache(new_cache_id)
+            self.__cache['past_cache_id'] = old_cache_id
+            self.save_memory_cache()
+
+        def save_memory_cache(self):
+            sql_insert_row('Memory_Caches','id',self.__cache)
 
         ## Add memory id to past sibling's 'next_sibling' id
         def update_past_sibling(self, memory_id, past_sibling_id):
             sql_update_row('Memories','id',{'id':past_sibling_id,'next_sibling_id':memory_id})
             
-        ## Stash the memory in the sql database
-        def stash_memory(self, memory):
-            debug_message('saving memory locally...', self.debug_messages_enabled)
+        ## Save the memory in the sql database
+        def save_memory(self, memory):
             sql_insert_row('Memories', 'id', memory)
 
         ## Update all lower-depth memories with higher-depth memory id
         def parent_local_child_memories(self, memory):
             debug_message('Parenting child memories...', self.debug_messages_enabled)
             memory_id = memory['id']
-            if self.__depth > 0 in memory:
-                child_ids = list(memory['lower_memory_ids'])
+            if self.__depth > 0:
+                if memory['episodic_children_ids'] is None:
+                    memory['episodic_children_ids'] = []
+                child_ids = list(memory['episodic_children_ids'])
                 children_memories = sql_query_by_ids('Memories', 'id', child_ids)
                 for child_memory in children_memories:
                     child_memory['episodic_parent_id'] = memory_id
                     sql_update_row('Memories','id',child_memory)
-
-    ## Build a memory object and pupulate it with none, some, or all columns/attributes
-    def __create_memory_object(self, **kwargs):
-        return create_row_object('Memories', **kwargs)
 
     ## Return the number of memories of a given cache
     def get_cache_memory_count(self,depth):
@@ -189,11 +180,11 @@ class MemoryManager:
 
     ## Return the list of memories currently in cache
     def get_memories_from_cache(self, depth):
-        return self.__episodic_memory_caches[int(depth)].memories.copy()
+        return self.__episodic_memory_caches[int(depth)].memories
 
-    ## Return id list of memories in previous cache before it was flushed.
-    def get_previous_memory_ids_from_cache(self, depth):
-        return self.__episodic_memory_caches[int(depth)].previous_memory_ids.copy()
+    # ## Return id list of memories in previous cache before it was flushed.
+    # def get_previous_memory_ids_from_cache(self, depth):
+    #     return self.__episodic_memory_caches[int(depth)].previous_memory_ids.copy()
 
     @property
     def cache_count(self):
@@ -201,27 +192,19 @@ class MemoryManager:
 
     ## Load JSON object representing state. State is all memory caches not yet summarized, active tasks, and active context.
     def load_state(self):
-        ## Get all json files ordered by name. The name should have a timestamp prefix.
-        files = glob.glob('%s/*.json' % (self.__config['memory_management']['memory_state_dir']))
-        files.sort(key=os.path.basename, reverse=True)
-
-        # there were no state backups so make and implement a new one
-        if len(list(files)) <= 0:
+        ## Get most recent memory state from database
+        query = f"select * from Memory_States order by created_on desc limit 1"
+        states = sql_custom_query(query)
+        # there were no state backups so return false to make a new one
+        if len(states) <= 0:
             debug_message("no state backups found...", self.debug_messages_enabled)
             return False
-
+        ## Append a new cache
         debug_message("state backups loaded...", self.debug_messages_enabled)
-        state_path = list(files)[0].replace('\\','/')
-        state = load_json(state_path)
-
-        for cache in state['memory_caches']:
+        memory_caches = sql_query_by_ids('Memory_Caches','id', states[0]['memory_cache_ids'])
+        for cache in memory_caches:
             depth = cache['depth']
             self.__episodic_memory_caches.append(self._MemoryCache(depth, self.__cache_token_limit, self.__max_tokens, cache))
-
-        ## TODO:
-        ## load state, if that fails, try backup files
-        ## If memory caches exceed max episodic depth then throw error or set new max
-        ## initialize missing memory caches
         return True
 
     def create_state(self):
@@ -231,47 +214,41 @@ class MemoryManager:
         self.save_state()
 
     def save_state(self):
-        ## TODO: Restrict backups to max_backup_states
-        timestamp = time()
-        timestring = timestamp_to_datetime(timestamp)
         unique_id = str(uuid4())
 
-        memory_caches = list()
-        for i in range(len(self.__episodic_memory_caches)):
-            memory_caches.append(self.__episodic_memory_caches[i].cache)
-
-        state = {
-            "id":unique_id,
-            "memory_caches":memory_caches,
-            "timestamp":timestamp,
-            "timestring":timestring
-        }
-
-        filename = ('%s_memory_state_%s.json' %(str(timestamp),unique_id))
-        filepath = ('%s/%s' % (self.__config['memory_management']['memory_state_dir'], filename))
-        save_json(filepath, state)
-        debug_message('State saved...', self.debug_messages_enabled)
+        memory_cache_ids = list()
+        for cache in self.__episodic_memory_caches:
+            memory_cache_ids.append(cache.id)
+            cache.save_memory_cache()
+        
+        ## Insert Memory State
+        state = create_row_object(
+            table_name='Memory_States',
+            id=unique_id,
+            memory_cache_ids=memory_cache_ids,
+            created_on=time(),
+            modified_on=time()
+        )
+        success = sql_insert_row('Memory_States','id',state)
+        if success:
+            debug_message('State saved.', self.debug_messages_enabled)
+        else:
+            debug_message('Unable to save state!', self.debug_messages_enabled)
 
     ## Assemble and index eidetic memories from a message by a speaker
     ## Eidetic memory is the base form of all episodic memory
     def generate_eidetic_memory(self, speaker, content):
-        timestamp = time()
         debug_message('Generating eidetic memory...', self.debug_messages_enabled)
-        unique_id = str(uuid4())
-        timestring = timestamp_to_datetime(timestamp)
-        depth = 0
-
-        content_tokens = get_token_estimate(content)
         
+        unique_id = str(uuid4())
+        depth = 0
+        content_tokens = get_token_estimate(content)
         summary = ('%s: %s') % (speaker, content)
         summary_tokens = get_token_estimate(summary)
 
-        # summary_result = self.summarize_content('%s: %s' % (speaker, content), depth, speaker, content_tokens = content_tokens)
-        # summary = self.cleanup_response(summary_result)
-        # summary_tokens = get_token_estimate(summary)
-
         ## Build episodic memory object
-        eidetic_memory = self.__create_memory_object(
+        eidetic_memory = create_row_object(
+            table_name='Memories',
             id=unique_id,
             depth=int(depth),
             speaker=speaker,
@@ -280,8 +257,8 @@ class MemoryManager:
             summary=summary,
             summary_tokens=int(summary_tokens),
             total_themes=0,
-            created_on=timestamp,
-            modified_on=timestamp
+            created_on=time(),
+            modified_on=time()
         )
         return eidetic_memory, summary_tokens
 
@@ -315,7 +292,6 @@ class MemoryManager:
                 recurrence = themes[theme_id]['recurrence']
                 total_themes += recurrence
                 ## Create a new theme link record
-                timestamp = str(time())
                 new_theme_id = str(uuid4())
                 new_theme = self.__themes.create_theme_link_object(
                     id=new_theme_id,
@@ -324,8 +300,8 @@ class MemoryManager:
                     theme_id=theme_id,
                     recurrence=recurrence,
                     cooldown=0,
-                    created_on=timestamp,
-                    modified_on=timestamp
+                    created_on=time(),
+                    modified_on=time()
                 )
                 ## Insert new theme link record
                 sql_insert_row('Theme_Links','id',new_theme)
@@ -337,15 +313,16 @@ class MemoryManager:
             sql_update_row('Memories', 'id', {'id':memory['id'], 'total_themes':new_total_themes})
 
         ## Build episodic memory object
-        episodic_memory = self.__create_memory_object(
+        episodic_memory = create_row_object(
+            table_name='Memories',
             id=unique_id,
             depth=int(depth),
             summary=summary,
             summary_tokens=int(summary_tokens),
             episodic_children_ids=memory_ids,
             total_themes=0,
-            created_on=timestamp,
-            modified_on=timestamp
+            created_on=time(),
+            modified_on=time()
         )
         return episodic_memory, summary_tokens
 
@@ -375,6 +352,7 @@ class MemoryManager:
         self.save_state()
 
     def create_new_memory(self, speaker, content):
+        compression_occurred = False
         episodic_memory = None
         episodic_tokens = 0
         depth = 0
@@ -384,16 +362,17 @@ class MemoryManager:
             debug_message('There is enough space in the cache...', self.debug_messages_enabled)
             self.__episodic_memory_caches[depth].add_memory(memory, tokens)
         else:
-            debug_message('There is not enough space in the cache, compressing...', self.debug_messages_enabled)    
-            episodic_memory, episodic_tokens = self.compress_memory_cache(depth)
+            debug_message('There is not enough space in the cache, compressing...', self.debug_messages_enabled)
+            self.compress_memory_cache(depth)
             self.__episodic_memory_caches[depth].flush_memory_cache()
             self.__episodic_memory_caches[depth].add_memory(memory, tokens)
-        
+            compression_occurred = True
         self.index_memory(memory)
         if speaker == 'RAVEN':
             debug_message('Saving state...', self.debug_messages_enabled)
             self.save_state()
-        return memory, tokens, episodic_memory, episodic_tokens
+
+        return memory, tokens, compression_occurred
 
     ## Summarize all active memories and return the new memory id
     ## TODO: This process could cascade several memory caches, but only depth 1 caches will be returned.
@@ -403,9 +382,6 @@ class MemoryManager:
         debug_message('Compressing cache of depth (%s)...' % str(depth), self.debug_messages_enabled)
         ## Get a copy of the cached memories
         memories = self.__episodic_memory_caches[int(depth)].memories
-        ## Ensure the memory cache current memory ids transfer to the previous memory ids list
-        self.__episodic_memory_caches[int(depth)].transfer_memory_ids()
-
 
         debug_message('Pushing compressed memory to cache of depth (%s)...' % str(int(depth)+1), self.debug_messages_enabled)
         ## Generate a higher depth memory
@@ -433,20 +409,21 @@ class MemoryManager:
             response_tokens = self.__prompts.EpisodicSummary.response_tokens
             temperature = self.__prompts.EpisodicSummary.temperature
 
-        messages = [self.compose_gpt_message(prompt,'user')]
+        messages = [compose_gpt_message(prompt,'user')]
         memory_element, total_tokens = gpt_completion(messages, temperature, response_tokens)
+        ## Save prompt and response
+        prompt_row = create_row_object(
+            table_name='Prompts',
+            id=str(uuid4()),
+            prompt=prompt,
+            response=memory_element,
+            tokens=total_tokens,
+            temperature=temperature,
+            comments=f"Summarization of memories at depth {depth}.",
+            created_on=time()
+        )
+        sql_insert_row('Prompts','id',prompt_row)
         return memory_element
-
-    ## The role can be either system or user. If the role is system then you are either giving the model instructions/personas or example prompts.
-    ## Then name field is used for example prompts which guide the model on how to respond.
-    ## If the name field has data, the model will not consider them part of the conversation; the role will be system by default.
-    def compose_gpt_message(self, content, role, name=''):
-        content = content.encode(encoding='ASCII',errors='ignore').decode() ## Cheeky way to remove encoding errors
-        if name == '':
-            return {"role":role, "content": content}
-        else:
-            role = 'system'
-            return {"role":role,"name":name,"content": content}
 
     ## Save memory locally, update local child memories, and save memory vector to pinecone
     def index_memory(self, memory):
@@ -454,9 +431,10 @@ class MemoryManager:
             return
         depth = int(memory['depth'])
         memory_id = memory['id']
+        memory_datetime = timestamp_to_detailed_datetime(memory['created_on'])
+        memory_summary = f"[{memory_datetime}]\n{str(memory['summary'])}"
         debug_message('indexing memory (%s)' % memory_id, self.debug_messages_enabled)
-
-        vector = gpt3_embedding(str(memory['summary']))
+        vector = gpt3_embedding(memory_summary)
         ## The metadata and namespace are redundant but I need the data split for later
         metadata = {'memory_type': 'episodic', 'depth': str(depth)}
         namespace = self.__config['memory_management']['memory_namespace_template'] % depth
@@ -483,53 +461,52 @@ class MemoryManager:
         # Neither recalls produce strong candidates
             # Recall was not successful, leave the section blank or notify Raven
 
-    ## Return recalled memory ids, a boolean if recall was performed, and a boolean if the recall was successful was successful
-    def memory_recall(self, most_recent_message, conversation_log, conversation_notes):
+    ## Return recalled memory ids and a boolean if the recall returned results
+    def memory_recall(self, most_recent_message, conversation_log):
         debug_message('Beginning memory recall.', self.debug_messages_enabled)
-        if conversation_log == '' and conversation_notes == '':
-            breakpoint('Stopping memory recall...')
-            return [], False, False
-        print('forcing memory recall skip...')
-        return [], False, False
+        if conversation_log == '':
+            breakpoint('Conversation log is empty. Skipping memory recall...')
+            return [], False
         ## Determine if memory recall is necessary:
         recall_prompt = self.__prompts.RecallExtraction.get_prompt(conversation_log)
         recall_response_tokens = self.__prompts.RecallExtraction.response_tokens
         recall_temperature = self.__prompts.RecallExtraction.temperature
         recall_instructions = self.__prompts.RecallExtraction.system_instructions
-
-        ## Save prompt and response
-        memory_recall_stash = self.__config['memory_management']['memory_recall_stash_dir']
-        timestamp = str(time())
-        recall_prompt_path = '%s/%s_recall_prompt.txt' % (memory_recall_stash, timestamp)
-        recall_response_path = '%s/%s_recall_response.txt' % (memory_recall_stash, timestamp)
-        save_file(recall_prompt_path, recall_prompt)
-
-        recall_messages = [self.compose_gpt_message(recall_instructions,'system'), self.compose_gpt_message(recall_prompt,'user')]
+        recall_messages = [compose_gpt_message(recall_instructions,'system'), compose_gpt_message(recall_prompt,'user')]
         recall_element, recall_total_tokens = gpt_completion(recall_messages, recall_temperature, recall_response_tokens)
-        save_file(recall_response_path, recall_element)
+        ## Save recall prompt and response
+        recall_prompt_row = create_row_object(
+            table_name='Prompts',
+            id=str(uuid4()),
+            prompt=recall_prompt,
+            response=recall_element,
+            system_message=recall_instructions,
+            tokens=recall_total_tokens,
+            temperature=recall_temperature,
+            comments='Checking if memory recall is needed.',
+            created_on=time()
+        )
+        sql_insert_row('Prompts','id',recall_prompt_row)
         
         recall_obj = string_to_json(recall_element)
         if 'sufficient_information' not in recall_obj:
             debug_message('Issue processing memory recall extraction object.', self.debug_messages_enabled)
-            return [], True, False
+            return [], False
 
         if recall_obj['sufficient_information']:
             debug_message('Sufficient information available, skipping memory recall...', self.debug_messages_enabled)
-            return [], True, True
+            return [], False
 
-        ## Recall determined that more information is needed.
-        
-        ## Perform an explict search against the user's most recent message
+        ## Recall determined that more information is needed. Perform an explict search against the user's most recent message
         recalled_hyde = recall_obj['reasoning'] + ('' if (recall_obj['required_information'] == '') else '\n%s' % recall_obj['required_information'])
         relevant_result_obj = self.explicit_memory_recall(recalled_hyde, most_recent_message)
 
         if 'pertinent_information_present' not in relevant_result_obj:
             debug_message('Memory relevancy didn''t return any results...', self.debug_messages_enabled)
-            return [], True, False
+            return [], False
         elif relevant_result_obj['pertinent_information_present']:
-            return relevant_result_obj['relevant_information_ids'], True, True
-            
-        return [], True, False
+            return relevant_result_obj['relevant_information_ids'], True
+        return [], False
 
     ## TODO: If the explicit memory recall fails to produce results then thematic search and a lower threshold explicit search will be needed
     def explicit_memory_recall(self, hyde_query, most_recent_message, threshold = 0.8):
@@ -544,14 +521,10 @@ class MemoryManager:
         if query_results is not None:
             if len(query_results['matches']) > 0:
                 relevant_content = ''
-                # memory_stash_folder = self.__config['memory_management']['memory_stash_dir']
-                # memory_depth_folder = (self.__config['memory_management']['stash_folder_template']) % 0
-
                 recalled_memories = {}
                 for match_memory in query_results['matches']:
                     if match_memory['score'] < 0.8:
                         continue
-                    # memory_filepath = '%s/%s/%s.json' % (memory_stash_folder, memory_depth_folder, match_memory['id'])
                     ## Load memory file
                     memories = sql_query_by_ids('Memories', 'id', [match_memory['id']])
                     if len(memories) == 0:
@@ -560,7 +533,7 @@ class MemoryManager:
                     memory_obj = memories[0]
                     ## Get memory contents
                     memory_id = memory_obj['id']
-                    memory_date = memory_obj['created_on']
+                    memory_date = timestamp_to_datetime(memory_obj['created_on'])
                     memory_content = memory_obj['content']
                     memory_speaker = memory_obj['speaker']
                     relevant_information_content = f"[\nINFORMATION ID: {memory_id}\nRECORDED ON: {memory_date}\nFROM: {memory_speaker}\nCONTENT: {memory_content}\n]\n"
@@ -573,21 +546,26 @@ class MemoryManager:
                 relevant_response_tokens = self.__prompts.RecallRelevancy.response_tokens
                 relevant_temperature = self.__prompts.RecallRelevancy.temperature
                 relevant_instructions = self.__prompts.RecallRelevancy.system_instructions
-
-                ## Save prompt and response
-                memory_recall_stash = self.__config['memory_management']['memory_recall_stash_dir']
-                timestamp = str(time())
-                relevant_prompt_path = '%s/%s_relevant_prompt.txt' % (memory_recall_stash, timestamp)
-                relevant_response_path = '%s/%s_relevant_response.txt' % (memory_recall_stash, timestamp)
-                save_file(relevant_prompt_path, relevant_prompt)
-
-                relevant_messages = [self.compose_gpt_message(relevant_instructions,'system'), self.compose_gpt_message(relevant_prompt,'user')]
+                relevant_messages = [compose_gpt_message(relevant_instructions,'system'), compose_gpt_message(relevant_prompt,'user')]
                 relevant_element, relevant_total_tokens = gpt_completion(relevant_messages, relevant_temperature, relevant_response_tokens)
-                save_file(relevant_response_path, relevant_element)
+                ## Save relevant memory prompt and response
+                relevant_prompt_row = create_row_object(
+                    table_name='Prompts',
+                    id=str(uuid4()),
+                    prompt=relevant_prompt,
+                    response=relevant_element,
+                    system_message=relevant_instructions,
+                    tokens=relevant_response_tokens,
+                    temperature=relevant_temperature,
+                    comments='Checking if recalled memories are relevant.',
+                    created_on=time()
+                )
+                sql_insert_row('Prompts','id',relevant_prompt_row)
 
                 relevant_obj = string_to_json(relevant_element)
         return relevant_obj
 
+    ## TODO: I need a "memory pruning" feature which properly removes memories from all places (pinecone, memory caches, ). If it triggered a memory compression it should remove those compressions. This will be tricky...
 
 
 # breakpoint('Here is the hyde:')

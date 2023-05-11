@@ -1,4 +1,4 @@
-from UtilityFunctions import get_token_estimate, get_config
+from UtilityFunctions import get_token_estimate, get_config, create_row_object
 
 ## Classes to store prompts and their metadata
 class _Prompt:
@@ -28,11 +28,6 @@ class _Prompt:
     def system_instructions(self):
         raise NotImplementedError()
 
-    ## Return the file path where debug elements from this prompt can be saved
-    @property
-    def stash_path(self):
-        raise NotImplementedError()
-
 ## Anticipate the needs of the USER based on the context of their conversation
 class _Anticipation(_Prompt):
     def __init__(self, temperature, response_tokens):
@@ -46,25 +41,17 @@ class _Anticipation(_Prompt):
     @property
     def prompt_tokens(self):
         return get_token_estimate(self.get_prompt(' ',' '))
-    @property
-    def stash_path(self):
-        return self.config['conversation_management']['anticipation_stash_dir']
 
 ## Prompt RAVEN to address the USER's most recent message
 class _Conversation(_Prompt):
     def __init__(self, temperature, response_tokens):
         super().__init__(temperature, response_tokens)
-    def get_prompt(self, log, anticipation = None, notes = None):
-        prompt_sections = ("" if (notes is None) else "conversation notes and ") + "conversation log"
-        content = ("" if (anticipation is None) else f"ANTICIPATED USER NEEDS:\n{anticipation}\n") + ("" if (notes is None) else f"CONVERSATION NOTES:\n{notes}\n") + f"CONVERSATION LOG:\n{log}"
+    def get_prompt(self, content, prompt_sections):
         prompt = f"I am a chatbot named RAVEN. My goals are to reduce suffering, increase prosperity, and increase understanding. I will review the {prompt_sections} below and then I will provide a detailed answer with emphasis on the last message by the user and my anticipation of their needs:\n{content}\nRAVEN:"
         return prompt
     @property
     def prompt_tokens(self):
         return get_token_estimate(self.get_prompt(' ',' ',' '))
-    @property
-    def stash_path(self):
-        return self.config['conversation_management']['conversation_stash_dir']
 
 ## Summarize a message from either USER or RAVEN
 class _EideticSummary(_Prompt):
@@ -76,9 +63,6 @@ class _EideticSummary(_Prompt):
     @property
     def prompt_tokens(self):
         return get_token_estimate(self.get_prompt(' ',' '))
-    @property
-    def stash_path(self):
-        return self.config['memory_management']['memory_prompts_dir']
 
 ## Summarize eidetic memories into an episodic memory
 class _EideticToEpisodicSummary(_Prompt):
@@ -90,9 +74,6 @@ class _EideticToEpisodicSummary(_Prompt):
     @property
     def prompt_tokens(self):
         return get_token_estimate(self.get_prompt(' ',' ',' '))
-    @property
-    def stash_path(self):
-        return self.config['memory_management']['memory_prompts_dir']
 
 ## Summarize a cache of other episodic memories
 class _EpisodicSummary(_Prompt):
@@ -101,9 +82,6 @@ class _EpisodicSummary(_Prompt):
     def get_prompt(self, content):
         prompt = f"I will condense the following notes so that all salient elements are represented in as little comprehensible text possible.\n{content}"
         return prompt
-    @property
-    def stash_path(self):
-        return self.config['memory_management']['memory_prompts_dir']
 
 ## Prompt to extract themes from a cache of memories
 class _ThemeExtraction(_Prompt):
@@ -115,9 +93,6 @@ class _ThemeExtraction(_Prompt):
     @property
     def prompt_tokens(self):
         return get_token_estimate(self.get_prompt(' '))
-    @property
-    def stash_path(self):
-        return self.config['memory_management']['theme_stash_dir']
     
 ## Prompt to check if RAVEN needs more information
 class _RecallExtraction(_Prompt):
@@ -129,9 +104,6 @@ class _RecallExtraction(_Prompt):
     @property
     def prompt_tokens(self):
         return get_token_estimate(self.get_prompt(' ')) + get_token_estimate(self.system_instructions())
-    @property
-    def stash_path(self):
-        return self.config['memory_management']['memory_recall_stash_dir']
     @property
     def system_instructions(self):
         return 'You are in interface to a Python program. All responses must conform to the following JSON schema:\n{\n\t\"type\": \"object\",\n\t\"properties\": {\n\t\t\"sufficient_information\": {\n\t\t\t\"type\": \"boolean\"\n\t\t},\n\t\t\"reasoning\": {\n\t\t\t\"type\": \"string\"\n\t\t},\n\t\t\"required_information\": {\n\t\t\t\"type\": \"string\"\n\t\t}\n\t},\n}'
@@ -146,9 +118,6 @@ class _RecallThemeExtraction(_Prompt):
     @property
     def prompt_tokens(self):
         return get_token_estimate(self.get_prompt(' '))
-    @property
-    def stash_path(self):
-        return self.config['memory_management']['theme_stash_dir']
 
 ## Prompt to check if recalled information is relevant to the conversation
 class _RecallRelevancy(_Prompt):
@@ -161,9 +130,6 @@ class _RecallRelevancy(_Prompt):
     @property
     def prompt_tokens(self):
         return get_token_estimate(self.get_prompt(' '))
-    @property
-    def stash_path(self):
-        return self.config['memory_management']['memory_recall_stash_dir']
     @property
     def system_instructions(self):
         return 'You are in interface to a Python program. All responses must conform to the following JSON schema:\n{\n\t\"type\": \"object\",\n\t\"properties\": {\n\t\t\"pertinent_information_present\": {\n\t\t\t\"type\": \"boolean\"\n\t\t},\n\t\t\"reasoning\": {\n\t\t\t\"type\": \"string\"\n\t\t},\n\t\t\"relevant_information_ids\": {\n\t\t\t\"type\": \"array\",\n\t\t  \"items\": {\n\t\t\t\"type\": \"string\"\n\t\t  }\n\t\t}\n\t}\n}'
